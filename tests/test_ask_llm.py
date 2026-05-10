@@ -115,9 +115,9 @@ class AskMissingApiKeyTests(CliCase):
 
 class AskClauseAwareCompositionTests(CliCase):
     def test_ask_can_emit_swap_recommendation_text(self):
-        """We don't auto-execute LLM-suggested swaps in this MVP — instead the
-        LLM emits a literal command string the user copies. Verify the system
-        prompt instructs the model to reference only listed templates."""
+        """The LLM emits a literal command string the user copies (or runs via
+        --execute). Verify the system prompt instructs the model to reference
+        only listed templates."""
         with temp_vault() as v:
             _seed_vault(v)
             harness = _AskHarness(
@@ -133,6 +133,127 @@ class AskClauseAwareCompositionTests(CliCase):
             self.assertIn("template-vault swap", out)
             sys_prompt = harness.calls[0]["system"]
             self.assertIn("Do NOT invent templates", sys_prompt)
+
+
+class CommandParseTests(unittest.TestCase):
+    def test_parses_plain_lines(self):
+        text = (
+            "Here's the plan:\n"
+            "  template-vault compose --base nda/a --as nda/b\n"
+            "  template-vault swap nda/b --clause \"Term and Survival\" --from nda/c\n"
+        )
+        cmds, skipped = tvc._parse_executable_commands(text)
+        self.assertEqual(len(cmds), 2)
+        self.assertEqual(cmds[0][0], "compose")
+        self.assertEqual(cmds[1][0], "swap")
+        self.assertEqual(cmds[1][3], "Term and Survival")
+        self.assertEqual(skipped, [])
+
+    def test_strips_shell_prompts_and_fences(self):
+        text = (
+            "```bash\n"
+            "$ template-vault compose --base nda/a --as nda/b\n"
+            "> template-vault swap nda/b --clause Foo --from nda/c\n"
+            "```\n"
+        )
+        cmds, _ = tvc._parse_executable_commands(text)
+        self.assertEqual(len(cmds), 2)
+
+    def test_skips_disallowed_subcommands(self):
+        text = (
+            "template-vault upload x.md --category nda --name x --summary s\n"
+            "template-vault import common-paper-mutual-nda\n"
+            "template-vault compose --base nda/a --as nda/b\n"
+        )
+        cmds, skipped = tvc._parse_executable_commands(text)
+        self.assertEqual(len(cmds), 1)
+        self.assertEqual(cmds[0][0], "compose")
+        self.assertEqual(len(skipped), 2)
+        self.assertTrue(any("upload" in s for s in skipped))
+        self.assertTrue(any("import" in s for s in skipped))
+
+    def test_no_commands_returns_empty(self):
+        cmds, skipped = tvc._parse_executable_commands("Just prose, no commands.")
+        self.assertEqual(cmds, [])
+        self.assertEqual(skipped, [])
+
+
+class AskExecuteTests(CliCase):
+    def test_execute_runs_compose_and_swap(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness(
+                "Recommendation:\n"
+                "  template-vault compose --base nda/house-mutual "
+                "--as nda/house-mutual-startup\n"
+                "  template-vault swap nda/house-mutual-startup "
+                "--clause \"Term and Survival\" --from nda/yc-friendly\n"
+            )
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, _out, _err = run_cli(
+                    "ask", "make me a startup-friendly mutual NDA",
+                    "--execute", "--yes-execute",
+                )
+                self.assertEqual(code, 0)
+            # compose result on disk
+            derived = v / "nda" / "house-mutual-startup"
+            self.assertTrue(derived.exists())
+            # swap result: clause_overrides recorded
+            import json as _json
+            meta = _json.loads((derived / "meta.json").read_text())
+            self.assertEqual(len(meta["clause_overrides"]), 1)
+            self.assertEqual(meta["clause_overrides"][0]["clause_title"],
+                             "Term and Survival")
+
+    def test_execute_non_interactive_without_yes_refuses(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness(
+                "  template-vault compose --base nda/house-mutual "
+                "--as nda/x"
+            )
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, _out, err = run_cli(
+                    "ask", "x", "--execute")
+                self.assertNotEqual(code, 0)
+                self.assertIn("non-interactive", err.lower())
+            # nothing was written
+            self.assertFalse((v / "nda" / "x").exists())
+
+    def test_execute_with_no_commands_in_response(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness("I recommend nda/house-mutual. No swap needed.")
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, _out, err = run_cli(
+                    "ask", "x", "--execute", "--yes-execute")
+                self.assertEqual(code, 0)
+                self.assertIn("no compose/swap commands", err.lower())
+
+    def test_execute_stops_chain_on_failure(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            # Second command targets a nonexistent clause → swap fails
+            harness = _AskHarness(
+                "  template-vault compose --base nda/house-mutual "
+                "--as nda/will-exist\n"
+                "  template-vault swap nda/will-exist "
+                "--clause \"NoSuchClause\" --from nda/yc-friendly\n"
+                "  template-vault compose --base nda/house-mutual "
+                "--as nda/should-not-exist\n"
+            )
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, _out, err = run_cli(
+                    "ask", "x", "--execute", "--yes-execute")
+                self.assertNotEqual(code, 0)
+                self.assertIn("stopping the chain", err.lower())
+            # First compose ran; third never did
+            self.assertTrue((v / "nda" / "will-exist").exists())
+            self.assertFalse((v / "nda" / "should-not-exist").exists())
 
 
 if __name__ == "__main__":

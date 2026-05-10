@@ -25,6 +25,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -238,7 +239,7 @@ def fill_meta_defaults(meta: Dict[str, Any]) -> Dict[str, Any]:
 def iter_templates(root: Path) -> Iterable[Tuple[str, str, Path, Dict[str, Any]]]:
     """Yield (category, name, path, meta) for every template in the vault."""
     for cat_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        if cat_dir.name in {"config", "tests", ".git", ".github"}:
+        if cat_dir.name in {"config", "tests", ".git", ".github", "clauses"}:
             continue
         for t_dir in sorted(p for p in cat_dir.iterdir() if p.is_dir()):
             if (t_dir / META_FILENAME).exists():
@@ -540,15 +541,33 @@ def _llm_request(cfg: Dict[str, Any], system: str, user: str,
 # ---------------------------------------------------------------------------
 
 
+SOURCES_ENV = "NDA_VAULT_SOURCES"
+
+
 def _sources_path() -> Path:
     return Path(__file__).resolve().parent / "config" / "default-sources.json"
 
 
-def load_sources_registry() -> Dict[str, Any]:
-    p = _sources_path()
+def _resolve_sources_path(args_ns: Optional[argparse.Namespace]) -> Optional[Path]:
+    """Pick the sources registry path: CLI flag > env var > bundled (None)."""
+    if args_ns is not None and getattr(args_ns, "sources", None):
+        return Path(args_ns.sources)
+    env = os.environ.get(SOURCES_ENV)
+    if env:
+        return Path(env)
+    return None
+
+
+def load_sources_registry(override_path: Optional[Path] = None) -> Dict[str, Any]:
+    p = override_path if override_path is not None else _sources_path()
     if not p.exists():
+        if override_path is not None:
+            raise VaultError(f"Sources registry not found: {p}")
         return {"schema_version": SCHEMA_VERSION, "sources": []}
-    return json.loads(p.read_text())
+    try:
+        return json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise VaultError(f"Malformed sources registry {p}: {e.msg}") from e
 
 
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
@@ -1207,10 +1226,18 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _slug_from_title(title: str) -> str:
+    """Lowercase, hyphenate, strip non-[a-z0-9-] for use as a filename."""
+    s = re.sub(r"\s+", "-", title.strip().lower())
+    s = re.sub(r"[^a-z0-9\-]", "", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "clause"
+
+
 def cmd_clause_library(args: argparse.Namespace) -> int:
     root = find_vault_root()
     threshold = args.threshold
-    by_title: Dict[str, List[Tuple[str, str, str, str]]] = {}
+    by_title: Dict[str, List[Tuple[str, str, str, str, str]]] = {}
     for cat, name, _path, meta in iter_templates(root):
         try:
             f = resolve_version_file(template_dir(root, cat, name), meta, None)
@@ -1224,49 +1251,92 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
         for c in clauses:
             body = slice_clause_text(text, c)
             by_title.setdefault(c["title"].lower(), []).append(
-                (f"{cat}/{name}", meta.get("latest_version") or "?", c["title"], body)
+                (cat, f"{cat}/{name}", meta.get("latest_version") or "?", c["title"], body)
             )
 
-    clusters: List[Tuple[str, List[Tuple[str, str]], float]] = []
+    # Each cluster: dict(title, members=[(ref, ver)], mean_r, ref_body, ref_category)
+    clusters: List[Dict[str, Any]] = []
     for title_lc, occurrences in by_title.items():
         if len(occurrences) < 2:
             continue
-        # Pairwise similarity. Group greedily: an occurrence joins the cluster
-        # if its body is similar (>= threshold) to the cluster's reference.
         used = [False] * len(occurrences)
         for i, ref in enumerate(occurrences):
             if used[i]:
                 continue
-            cluster = [(ref[0], ref[1])]
+            ref_cat, ref_label, ref_ver, ref_title, ref_body = ref
+            cluster_members = [(ref_label, ref_ver)]
             ratios = [1.0]
             used[i] = True
             for j, other in enumerate(occurrences[i + 1:], start=i + 1):
                 if used[j]:
                     continue
-                r = difflib.SequenceMatcher(None, ref[3], other[3]).ratio()
+                _ocat, olabel, over, _otitle, obody = other
+                r = difflib.SequenceMatcher(None, ref_body, obody).ratio()
                 if r >= threshold:
-                    cluster.append((other[0], other[1]))
+                    cluster_members.append((olabel, over))
                     ratios.append(r)
                     used[j] = True
-            if len(cluster) >= 2:
-                clusters.append((ref[2], cluster, sum(ratios) / len(ratios)))
+            if len(cluster_members) >= 2:
+                clusters.append({
+                    "title": ref_title,
+                    "members": cluster_members,
+                    "mean_r": sum(ratios) / len(ratios),
+                    "ref_body": ref_body,
+                    "ref_category": ref_cat,
+                })
 
-    clusters.sort(key=lambda t: (-len(t[1]), -t[2], t[0]))
+    clusters.sort(key=lambda c: (-len(c["members"]), -c["mean_r"], c["title"]))
     if not clusters:
         print(f"(no clusters above threshold {threshold:.2f})")
         return 0
-    for title, members, mean_r in clusters:
-        print(f"- {title}  (n={len(members)}, mean_similarity={mean_r:.2f})")
-        for ref, ver in members:
+    for c in clusters:
+        print(f"- {c['title']}  (n={len(c['members'])}, mean_similarity={c['mean_r']:.2f})")
+        for ref, ver in c["members"]:
             print(f"    · {ref}@{ver}")
-    if args.extract:
-        # Best-effort interactive extraction prompt.
-        try:
-            ans = input("\nExtract any of these to clauses/<category>/<slug>.md? [y/N] ").strip().lower()
-        except EOFError:
-            ans = "n"
-        if ans == "y":
-            print("Note: extraction is interactive and writes only when confirmed per cluster.")
+
+    if not args.extract:
+        return 0
+
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive and not args.yes_extract_all:
+        _eprint(
+            "\n--extract in a non-interactive context requires --yes-extract-all "
+            "to confirm extraction of every cluster shown above."
+        )
+        return 1
+
+    extracted = 0
+    for c in clusters:
+        slug = _slug_from_title(c["title"])
+        dest = root / "clauses" / c["ref_category"] / f"{slug}.md"
+        if dest.exists():
+            print(f"  skip: {dest.relative_to(root)} already exists")
+            continue
+        if not args.yes_extract_all:
+            try:
+                ans = input(
+                    f'\nExtract "{c["title"]}" → '
+                    f'{dest.relative_to(root)} ? [y/N] '
+                ).strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans != "y":
+                continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Body already starts with the H2 header. Add a small provenance note.
+        members_str = ", ".join(f"{ref}@{ver}" for ref, ver in c["members"])
+        provenance = (
+            f"<!-- extracted by template-vault clause-library on {_today_iso()} "
+            f"from: {members_str} -->\n\n"
+        )
+        dest.write_text(provenance + c["ref_body"].rstrip() + "\n")
+        extracted += 1
+        print(f"  wrote: {dest.relative_to(root)}")
+
+    if extracted == 0:
+        print("\n(no clusters extracted)")
+    else:
+        print(f"\nextracted {extracted} cluster(s) to clauses/")
     return 0
 
 
@@ -1371,6 +1441,84 @@ def cmd_ask(args: argparse.Namespace) -> int:
             sys.stdout, indent=2,
         )
         sys.stdout.write("\n")
+    if args.execute:
+        return _execute_llm_commands(text, interactive=interactive,
+                                     yes_execute=args.yes_execute)
+    return 0
+
+
+# Only the structural primitives can be auto-executed. Anything that mutates
+# the vault destructively (upload, import, publish), reads/writes outside the
+# vault, or could exfiltrate content stays manual.
+_EXECUTABLE_SUBCOMMANDS = {"compose", "swap"}
+
+
+def _parse_executable_commands(llm_text: str) -> Tuple[List[List[str]], List[str]]:
+    """Scan an LLM response for `template-vault …` lines.
+
+    Returns (allowed_argvs, skipped_reasons). Allowed argvs are stripped of the
+    program name (so `["compose", "--base", ...]`). Subcommands not in the
+    whitelist are reported via skipped_reasons.
+    """
+    allowed: List[List[str]] = []
+    skipped: List[str] = []
+    for raw in llm_text.splitlines():
+        line = raw.strip()
+        # Strip common shell-prompt and code-fence prefixes.
+        for prefix in ("$ ", "> ", "```bash", "```sh", "```", "`"):
+            if line.startswith(prefix):
+                line = line[len(prefix):].strip()
+        line = line.rstrip("`").strip()
+        if not line.startswith("template-vault "):
+            continue
+        try:
+            argv = shlex.split(line)
+        except ValueError:
+            skipped.append(f"unparseable: {line}")
+            continue
+        if len(argv) < 2 or argv[0] != "template-vault":
+            continue
+        sub = argv[1]
+        if sub not in _EXECUTABLE_SUBCOMMANDS:
+            skipped.append(f"subcommand not auto-executable: {sub}")
+            continue
+        allowed.append(argv[1:])
+    return allowed, skipped
+
+
+def _execute_llm_commands(llm_text: str, *, interactive: bool,
+                          yes_execute: bool) -> int:
+    cmds, skipped = _parse_executable_commands(llm_text)
+    if skipped:
+        for s in skipped:
+            _eprint(f"  skipped: {s}")
+    if not cmds:
+        _eprint("(--execute: no compose/swap commands found in the LLM response)")
+        return 0
+    print("\nProposed commands:")
+    for argv in cmds:
+        print("  template-vault " + " ".join(shlex.quote(a) for a in argv))
+    if not yes_execute:
+        if not interactive:
+            _eprint(
+                "\n--execute in a non-interactive context requires --yes-execute "
+                "to confirm running the commands above."
+            )
+            return 1
+        try:
+            ans = input("\nRun these? [y/N] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans != "y":
+            _eprint("aborted")
+            return 0
+    for argv in cmds:
+        rendered = "template-vault " + " ".join(shlex.quote(a) for a in argv)
+        print(f"\n→ {rendered}")
+        rc = main(argv)
+        if rc != 0:
+            _eprint(f"command failed (exit {rc}); stopping the chain")
+            return rc
     return 0
 
 
@@ -1380,8 +1528,12 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
 
 def cmd_sources(_args: argparse.Namespace) -> int:
-    reg = load_sources_registry()
-    print(f"Bundled sources (schema_version={reg.get('schema_version')}):")
+    override = _resolve_sources_path(_args)
+    reg = load_sources_registry(override)
+    label = "custom" if override else "bundled"
+    print(f"{label.capitalize()} sources (schema_version={reg.get('schema_version')}):")
+    if override:
+        print(f"  registry: {override}")
     for src in reg.get("sources", []):
         print(f"  {src['id']}")
         print(f"    category: {src.get('category')}")
@@ -1392,7 +1544,7 @@ def cmd_sources(_args: argparse.Namespace) -> int:
 
 def cmd_import(args: argparse.Namespace) -> int:
     root = find_vault_root()
-    reg = load_sources_registry()
+    reg = load_sources_registry(_resolve_sources_path(args))
     matches = [s for s in reg.get("sources", []) if s.get("id") == args.source_id]
     if not matches:
         ids = ", ".join(s["id"] for s in reg.get("sources", []))
@@ -1678,6 +1830,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_lib.add_argument("--threshold", type=float, default=0.85)
     p_lib.add_argument("--extract", action="store_true",
                        help="Prompt to extract clusters into clauses/<category>/<slug>.md")
+    p_lib.add_argument("--yes-extract-all", action="store_true",
+                       help="With --extract, write every cluster without prompting")
     p_lib.set_defaults(func=cmd_clause_library)
 
     p_ask = sub.add_parser("ask", help="LLM-conversational template recommendation")
@@ -1689,6 +1843,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Skip the --with-content confirmation prompt")
     p_ask.add_argument("--json", action="store_true",
                        help="Also print a JSON blob of {query, candidates, answer}")
+    p_ask.add_argument("--execute", action="store_true",
+                       help="Parse the LLM response for `template-vault compose` / "
+                            "`swap` lines and run them. Other subcommands are skipped.")
+    p_ask.add_argument("--yes-execute", action="store_true",
+                       help="Skip the run-confirmation prompt for --execute")
     _add_llm_flags(p_ask)
     p_ask.set_defaults(func=cmd_ask)
 
@@ -1698,9 +1857,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Skip hash verification (not recommended)")
     p_imp.add_argument("--pin-hash", action="store_true",
                        help="Record the observed hash in vault config for next run")
+    p_imp.add_argument("--sources", metavar="PATH",
+                       help=f"Path to a custom sources registry JSON. Overrides the "
+                            f"bundled registry. Also settable via {SOURCES_ENV}.")
     p_imp.set_defaults(func=cmd_import)
 
     p_src = sub.add_parser("sources", help="List bundled public-source registry entries")
+    p_src.add_argument("--sources", metavar="PATH",
+                       help=f"Path to a custom sources registry JSON. Overrides the "
+                            f"bundled registry. Also settable via {SOURCES_ENV}.")
     p_src.set_defaults(func=cmd_sources)
 
     p_sync = sub.add_parser("sync", help="git pull (thin wrapper)")

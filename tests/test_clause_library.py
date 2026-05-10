@@ -60,5 +60,62 @@ class ClauseLibraryTests(CliCase):
         self.assertIn("Confidentiality", out)
 
 
+class ClauseLibraryExtractTests(CliCase):
+    def setUp(self):
+        self._cm = temp_vault()
+        self.vault = self._cm.__enter__()
+        add_template(self.vault, "nda", "a", _doc("one year"))
+        add_template(self.vault, "nda", "b", _doc("two years", SHARED_CONF_NEAR))
+        add_template(self.vault, "nda", "c", _doc("three years"))
+
+    def tearDown(self):
+        self._cm.__exit__(None, None, None)
+
+    def test_extract_all_writes_clause_file(self):
+        code, out, _err = run_cli(
+            "clause-library", "--threshold", "0.85",
+            "--extract", "--yes-extract-all",
+        )
+        self.assertEqual(code, 0)
+        dest = self.vault / "clauses" / "nda" / "confidentiality.md"
+        self.assertTrue(dest.exists(), f"expected {dest} to exist")
+        body = dest.read_text()
+        # Provenance comment with the source templates
+        self.assertIn("extracted by template-vault clause-library", body)
+        self.assertIn("nda/a@v1", body)
+        # The clause body itself
+        self.assertIn("## Confidentiality", body)
+        self.assertIn("solely for the purpose", body)
+        self.assertIn("wrote:", out)
+
+    def test_extract_skips_existing_files(self):
+        run_cli("clause-library", "--threshold", "0.85",
+                "--extract", "--yes-extract-all")
+        # Run again — should skip
+        code, out, _err = run_cli(
+            "clause-library", "--threshold", "0.85",
+            "--extract", "--yes-extract-all",
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("already exists", out)
+
+    def test_extract_non_interactive_without_yes_all_refuses(self):
+        # stdin is not a tty in the test runner.
+        code, _out, err = run_cli(
+            "clause-library", "--threshold", "0.85", "--extract")
+        self.assertNotEqual(code, 0)
+        self.assertIn("non-interactive", err.lower())
+
+    def test_extract_does_not_treat_clauses_dir_as_category(self):
+        # After extracting, re-running clause-library shouldn't pick up the
+        # clauses/ dir as another set of templates (no meta.json there).
+        run_cli("clause-library", "--threshold", "0.85",
+                "--extract", "--yes-extract-all")
+        code, out, _err = run_cli("clause-library", "--threshold", "0.85")
+        self.assertEqual(code, 0)
+        # Still finds the original confidentiality cluster, not duplicated
+        self.assertEqual(out.count("- Confidentiality "), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
