@@ -102,6 +102,28 @@ class SwapTests(CliCase):
         titles = [o["clause_title"] for o in meta["clause_overrides"]]
         self.assertEqual(titles, ["Term and Survival", "Purpose"])
 
+    def test_swap_resolves_alias_to_canonical_clause(self):
+        # Mark "Termination" as an alias of the source's "Term and Survival",
+        # then `--clause Termination` should still find it.
+        src_meta_path = self.vault / "nda" / "yc-friendly" / "meta.json"
+        meta = json.loads(src_meta_path.read_text())
+        meta["clause_aliases"] = {"Term and Survival": ["Termination"]}
+        src_meta_path.write_text(json.dumps(meta, indent=2) + "\n")
+        # Same alias on target so target lookup also resolves.
+        tgt_meta_path = self.vault / "nda" / "house-mutual-startup" / "meta.json"
+        tgt_meta = json.loads(tgt_meta_path.read_text())
+        tgt_meta["clause_aliases"] = {"Term and Survival": ["Termination"]}
+        tgt_meta_path.write_text(json.dumps(tgt_meta, indent=2) + "\n")
+
+        code, _out, _err = run_cli(
+            "swap", "nda/house-mutual-startup",
+            "--clause", "Termination",
+            "--from", "nda/yc-friendly",
+        )
+        self.assertEqual(code, 0)
+        after = (self.vault / "nda" / "house-mutual-startup" / "v1.md").read_text()
+        self.assertIn("one year from the Effective Date", after)
+
 
 if __name__ == "__main__":
     unittest.main()

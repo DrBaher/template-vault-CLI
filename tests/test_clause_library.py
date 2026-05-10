@@ -1,5 +1,6 @@
 """clause-library — find similar clauses across templates by similarity threshold."""
 
+import json
 import unittest
 
 from tests._helpers import (
@@ -115,6 +116,69 @@ class ClauseLibraryExtractTests(CliCase):
         self.assertEqual(code, 0)
         # Still finds the original confidentiality cluster, not duplicated
         self.assertEqual(out.count("- Confidentiality "), 1)
+
+
+class ClauseLibraryHeaderStripTests(CliCase):
+    """Headers like '## 4. Foo' vs '## 7. Foo' should not depress the
+    similarity ratio — the comparison must run on the body without the header."""
+
+    def test_clauses_with_different_numbering_still_cluster(self):
+        with temp_vault() as v:
+            shared = (
+                "Each Party shall protect the Confidential Information of the "
+                "other Party using the same degree of care it uses for its own."
+            )
+            doc_a = f"# A\n\n## 4. Confidentiality\n{shared}\n\n## Term\nx\n"
+            doc_b = f"# B\n\n## 7. Confidentiality\n{shared}\n\n## Term\ny\n"
+            add_template(v, "nda", "a", doc_a)
+            add_template(v, "nda", "b", doc_b)
+            # 0.999 threshold — only succeeds if the header is excluded from
+            # the similarity comparison (the bodies after the header are byte
+            # identical; the headers differ on the digit).
+            code, out, _err = run_cli("clause-library", "--threshold", "0.999")
+            self.assertEqual(code, 0)
+            self.assertIn("Confidentiality", out)
+            self.assertIn("n=2", out)
+
+
+class ClauseLibraryAliasClusterTests(CliCase):
+    """Templates that name the same clause differently can still cluster, as
+    long as one of them declares the equivalence in clause_aliases."""
+
+    def test_aliases_collapse_titles_into_one_cluster(self):
+        with temp_vault() as v:
+            shared = (
+                "This agreement shall remain in effect for the period of "
+                "evaluation. Confidentiality obligations survive termination."
+            )
+            doc_a = f"# A\n\n## 1. Term and Survival\n{shared}\n"
+            doc_b = f"# B\n\n## 1. Termination\n{shared}\n"
+            add_template(v, "nda", "a", doc_a)
+            add_template(v, "nda", "b", doc_b)
+            # Declare the equivalence on template a only.
+            meta = json.loads((v / "nda" / "a" / "meta.json").read_text())
+            meta["clause_aliases"] = {"Term and Survival": ["Termination"]}
+            (v / "nda" / "a" / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+            code, out, _err = run_cli("clause-library", "--threshold", "0.85")
+            self.assertEqual(code, 0)
+            # Two distinct titles fold into one cluster.
+            self.assertIn("n=2", out)
+            # The non-canonical title is annotated so the output stays honest.
+            self.assertIn("(as 'Termination')", out)
+
+    def test_no_alias_means_no_cross_title_cluster(self):
+        with temp_vault() as v:
+            shared = "Some shared body text that's identical across two clauses."
+            doc_a = f"# A\n\n## 1. Term and Survival\n{shared}\n"
+            doc_b = f"# B\n\n## 1. Termination\n{shared}\n"
+            add_template(v, "nda", "a", doc_a)
+            add_template(v, "nda", "b", doc_b)
+            # No clause_aliases — these stay separate buckets and won't form
+            # a 2-member cluster.
+            code, out, _err = run_cli("clause-library", "--threshold", "0.85")
+            self.assertEqual(code, 0)
+            self.assertNotIn("n=2", out)
 
 
 if __name__ == "__main__":
