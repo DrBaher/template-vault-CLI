@@ -81,10 +81,11 @@ template-vault clause-library   [--threshold 0.85] [--extract]
 
 # LLM (opt-in, metadata-only by default)
 template-vault ask "<query>" [--with-content] [--top-k 5] [--llm anthropic]
+template-vault ask "<query>" --execute [--yes-execute]   # run LLM-emitted compose/swap
 
 # Public sources
-template-vault sources
-template-vault import <source-id> [--no-verify | --pin-hash]
+template-vault sources [--sources path/to/internal-sources.json]
+template-vault import <source-id> [--no-verify | --pin-hash] [--sources …]
 
 # Sync + housekeeping
 template-vault sync          # git pull
