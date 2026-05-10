@@ -110,5 +110,95 @@ class SourcesListTests(CliCase):
             self.assertIn("CC BY 4.0", out)
 
 
+CUSTOM_REGISTRY = {
+    "schema_version": 1,
+    "sources": [{
+        "id": "internal-vendor-nda",
+        "category": "nda",
+        "name": "internal-vendor-nda",
+        "url": "https://internal.example.test/templates/vendor-nda.md",
+        "license": "internal-use-only",
+        "attribution": "Internal legal team",
+        "sha256": None,
+        "summary": "Vendor NDA, internal use only",
+        "tags": ["internal", "vendor"],
+    }],
+}
+
+
+class CustomRegistryTests(CliCase):
+    def test_sources_flag_overrides_bundled(self):
+        with temp_vault() as v:
+            reg = v / "internal-sources.json"
+            reg.write_text(json.dumps(CUSTOM_REGISTRY))
+            code, out, _err = run_cli("sources", "--sources", str(reg))
+            self.assertEqual(code, 0)
+            self.assertIn("Custom sources", out)
+            self.assertIn("internal-vendor-nda", out)
+            self.assertNotIn("common-paper-mutual-nda", out)
+
+    def test_sources_env_var_overrides_bundled(self):
+        import os
+        with temp_vault() as v:
+            reg = v / "internal-sources.json"
+            reg.write_text(json.dumps(CUSTOM_REGISTRY))
+            os.environ[tvc.SOURCES_ENV] = str(reg)
+            try:
+                code, out, _err = run_cli("sources")
+                self.assertEqual(code, 0)
+                self.assertIn("internal-vendor-nda", out)
+            finally:
+                del os.environ[tvc.SOURCES_ENV]
+
+    def test_cli_flag_wins_over_env_var(self):
+        import os
+        with temp_vault() as v:
+            env_reg = v / "env-sources.json"
+            env_reg.write_text(json.dumps({
+                "schema_version": 1, "sources": [{
+                    "id": "env-only", "category": "nda", "name": "env",
+                    "url": "x", "license": "x", "sha256": None,
+                    "summary": "", "tags": [],
+                }]}))
+            flag_reg = v / "flag-sources.json"
+            flag_reg.write_text(json.dumps(CUSTOM_REGISTRY))
+            os.environ[tvc.SOURCES_ENV] = str(env_reg)
+            try:
+                code, out, _err = run_cli("sources", "--sources", str(flag_reg))
+                self.assertEqual(code, 0)
+                self.assertIn("internal-vendor-nda", out)
+                self.assertNotIn("env-only", out)
+            finally:
+                del os.environ[tvc.SOURCES_ENV]
+
+    def test_import_uses_custom_registry(self):
+        with temp_vault() as v:
+            reg = v / "internal-sources.json"
+            reg.write_text(json.dumps(CUSTOM_REGISTRY))
+            with mock.patch.object(tvc, "_fetch_url", return_value=SAMPLE_BODY):
+                code, _out, _err = run_cli(
+                    "import", "internal-vendor-nda", "--sources", str(reg))
+                self.assertEqual(code, 0)
+            t = v / "nda" / "internal-vendor-nda"
+            meta = json.loads((t / "meta.json").read_text())
+            self.assertEqual(meta["license"], "internal-use-only")
+            self.assertEqual(meta["source"], "https://internal.example.test/templates/vendor-nda.md")
+
+    def test_missing_custom_registry_errors(self):
+        with temp_vault():
+            code, _out, err = run_cli(
+                "sources", "--sources", "/no/such/file.json")
+            self.assertNotEqual(code, 0)
+            self.assertIn("not found", err.lower())
+
+    def test_malformed_custom_registry_errors(self):
+        with temp_vault() as v:
+            reg = v / "broken.json"
+            reg.write_text("{ not valid json")
+            code, _out, err = run_cli("sources", "--sources", str(reg))
+            self.assertNotEqual(code, 0)
+            self.assertIn("malformed", err.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
