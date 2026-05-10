@@ -90,6 +90,86 @@ class ClauseFindTests(unittest.TestCase):
         cs = tvc.detect_clauses(SAMPLE_NDA_MUTUAL)
         self.assertIsNone(tvc.find_clause_by_title(cs, "Indemnity"))
 
+    def test_find_ambiguous_substring_raises(self):
+        # A vault where two clauses share a common substring word.
+        text = "## 1. Confidentiality Obligations\nx\n## 2. Termination\ny\n"
+        cs = tvc.detect_clauses(text)
+        with self.assertRaises(tvc.VaultError) as ctx:
+            tvc.find_clause_by_title(cs, "tion")
+        msg = str(ctx.exception)
+        self.assertIn("ambiguous", msg.lower())
+        self.assertIn("Confidentiality Obligations", msg)
+        self.assertIn("Termination", msg)
+
+    def test_find_via_alias_exact(self):
+        text = "## 1. Term and Survival\nbody\n## 2. Other\nx\n"
+        cs = tvc.detect_clauses(
+            text,
+            aliases_map={"Term and Survival": ["Termination", "Duration"]},
+        )
+        c = tvc.find_clause_by_title(cs, "Termination")
+        self.assertIsNotNone(c)
+        self.assertEqual(c["title"], "Term and Survival")
+        c2 = tvc.find_clause_by_title(cs, "duration")
+        self.assertEqual(c2["title"], "Term and Survival")
+
+    def test_alias_normalization_strips_numbering(self):
+        # Alias supplied as "1. Termination" still resolves to the canonical clause.
+        text = "## 1. Term and Survival\nbody\n"
+        cs = tvc.detect_clauses(
+            text,
+            aliases_map={"Term and Survival": ["1. Termination"]},
+        )
+        c = tvc.find_clause_by_title(cs, "Termination")
+        self.assertIsNotNone(c)
+
+
+class StripClauseNumberTests(unittest.TestCase):
+    """Numbering-prefix stripping covers the formats actually used in
+    professionally-drafted templates."""
+
+    cases = [
+        ("1. Purpose", "Purpose"),
+        ("1) Purpose", "Purpose"),
+        ("(1) Purpose", "Purpose"),
+        ("[1] Purpose", "Purpose"),
+        ("1.1 Subsection Heading", "Subsection Heading"),
+        ("1.2.3 Deep", "Deep"),
+        ("Article I. Term and Survival", "Term and Survival"),
+        ("Article 1. Term", "Term"),
+        ("Article IV. Term", "Term"),
+        ("ARTICLE 4. Term", "Term"),
+        ("Section 4. Term", "Term"),
+        ("Sec. 4. Term", "Term"),
+        ("Sec 4. Term", "Term"),
+        ("§ 4. Term", "Term"),
+        ("§4.2 Term", "Term"),
+        ("Clause 7. Term", "Term"),
+        ("Part II. Term", "Term"),
+        # No numbering — should be a no-op:
+        ("Purpose", "Purpose"),
+        ("Term and Survival", "Term and Survival"),
+        # Don't over-strip a real word that starts with a digit-like prefix.
+        ("Indemnification", "Indemnification"),
+    ]
+
+    def test_all_supported_prefixes_strip_to_title(self):
+        for raw, expected in self.cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(tvc._strip_clause_number(raw), expected)
+
+    def test_clauses_command_picks_up_extended_prefixes(self):
+        text = (
+            "## Article IV. Term and Survival\nbody\n"
+            "## § 5. Indemnification\nbody2\n"
+            "## (6) Notices\nbody3\n"
+        )
+        cs = tvc.detect_clauses(text)
+        self.assertEqual(
+            [c["title"] for c in cs],
+            ["Term and Survival", "Indemnification", "Notices"],
+        )
+
 
 class ClausesCommandTests(CliCase):
     def test_clauses_lists_titles(self):

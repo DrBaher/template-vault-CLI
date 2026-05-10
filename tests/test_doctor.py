@@ -63,6 +63,19 @@ class DoctorTests(CliCase):
             self.assertNotEqual(code, 0)
             self.assertIn("anchor", out.lower())
 
+    def test_flags_dangling_clause_alias_key(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            mp = v / "nda" / "x" / "meta.json"
+            meta = json.loads(mp.read_text())
+            # "Indemnification" isn't a real clause in SAMPLE_NDA_MUTUAL.
+            meta["clause_aliases"] = {"Indemnification": ["Indemnity"]}
+            mp.write_text(json.dumps(meta, indent=2) + "\n")
+            code, out, _err = run_cli("doctor")
+            self.assertNotEqual(code, 0)
+            self.assertIn("clause_aliases", out)
+            self.assertIn("Indemnification", out)
+
 
 class FirstRunHintTests(CliCase):
     def test_bare_invocation_prints_hint(self):

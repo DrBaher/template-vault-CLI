@@ -80,6 +80,7 @@ META_DEFAULTS = {
     "forked_at_parent_version": None,
     "clauses": None,
     "clause_overrides": [],
+    "clause_aliases": {},
 }
 
 # Auto-detect clause headers by H2 only (not H3+). Anchored at line start.
@@ -307,9 +308,11 @@ def auto_increment_version(meta: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def detect_clauses(text: str, explicit_map: Optional[List[Dict[str, str]]] = None
+def detect_clauses(text: str,
+                   explicit_map: Optional[List[Dict[str, str]]] = None,
+                   aliases_map: Optional[Dict[str, List[str]]] = None,
                    ) -> List[Dict[str, Any]]:
-    """Return [{title, anchor, start, end}, ...] for each clause in `text`.
+    """Return [{title, anchor, start, end, aliases}, ...] for each clause.
 
     H2 (`## ...`) only — H3+ subsections stay inside the parent clause body.
 
@@ -317,18 +320,51 @@ def detect_clauses(text: str, explicit_map: Optional[List[Dict[str, str]]] = Non
     full header line as it appears in the file ("## 1. Purpose"); we locate
     each one by string match. Body extends from the matched line to the next
     matched anchor (or EOF).
+
+    `aliases_map` is `{canonical_title: [alias, ...]}` from meta.json's
+    `clause_aliases`. Each detected clause gets an `aliases` list of normalized
+    alternate names that `find_clause_by_title` will accept.
     """
     if explicit_map:
-        return _detect_from_explicit(text, explicit_map)
-    matches = list(H2_RE.finditer(text))
-    out: List[Dict[str, Any]] = []
-    for i, m in enumerate(matches):
-        title = _strip_clause_number(m.group(1).strip())
-        anchor = m.group(0)
-        start = m.start()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        out.append({"title": title, "anchor": anchor, "start": start, "end": end})
-    return out
+        clauses = _detect_from_explicit(text, explicit_map)
+    else:
+        matches = list(H2_RE.finditer(text))
+        clauses = []
+        for i, m in enumerate(matches):
+            title = _strip_clause_number(m.group(1).strip())
+            anchor = m.group(0)
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            clauses.append({"title": title, "anchor": anchor,
+                            "start": start, "end": end})
+    _attach_aliases(clauses, aliases_map)
+    return clauses
+
+
+def _norm_clause_key(s: str) -> str:
+    """Normalize a clause title or alias for matching."""
+    return _strip_clause_number(s).strip().lower()
+
+
+def _attach_aliases(clauses: List[Dict[str, Any]],
+                    aliases_map: Optional[Dict[str, List[str]]]) -> None:
+    """Mutates each clause dict to include an `aliases` list (lowercased,
+    number-stripped). Aliases whose key doesn't match a real clause are
+    silently ignored here (`doctor` surfaces them)."""
+    if not aliases_map:
+        for c in clauses:
+            c["aliases"] = []
+        return
+    norm_to_aliases: Dict[str, List[str]] = {}
+    for canonical, aliases in aliases_map.items():
+        if not isinstance(aliases, list):
+            continue
+        key = _norm_clause_key(canonical)
+        norm_to_aliases.setdefault(key, []).extend(
+            _norm_clause_key(a) for a in aliases if isinstance(a, str) and a.strip()
+        )
+    for c in clauses:
+        c["aliases"] = list(dict.fromkeys(norm_to_aliases.get(c["title"].lower(), [])))
 
 
 def _detect_from_explicit(text: str, explicit_map: List[Dict[str, str]]
@@ -352,21 +388,83 @@ def _detect_from_explicit(text: str, explicit_map: List[Dict[str, str]]
     return out
 
 
+_ROMAN_RE = r"(?:M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{1,3})|I{1,3})"
+
+# Match leading numbering tokens we want to strip. Order matters: longer
+# Article/Section forms come before bare numbers so they're consumed first.
+_NUMBER_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:Article|Section|Sec\.?|Art\.?|Clause|Part)\s+"  # word prefix …
+    r"(?:" + _ROMAN_RE + r"|\d+(?:\.\d+)*)"              # … followed by I/IV or 1.2.3
+    r"|"
+    r"§\s*\d+(?:\.\d+)*"                                  # § 4 / § 4.2.1
+    r"|"
+    r"\(\d+\)"                                            # (1) / (12)
+    r"|"
+    r"\[\d+\]"                                            # [1]
+    r"|"
+    r"\d+(?:\.\d+)+"                                      # 1.2 / 1.2.3
+    r"|"
+    r"\d+"                                                # bare 1 / 42
+    r")"
+    r"[\.\)\]:\s]*",                                      # trailing punctuation
+    re.IGNORECASE,
+)
+
+
 def _strip_clause_number(s: str) -> str:
-    """Normalize '1. Purpose' or '1) Purpose' → 'Purpose' for matching by title."""
-    return re.sub(r"^\s*\d+[.\)]\s*", "", s)
+    """Normalize clause-title numbering for matching.
+
+    Handles a wider set of numbering styles than just `1.` / `1)`:
+      - 1.   1)   (1)   [1]
+      - 1.1  1.2.3
+      - Article I.   Article 1.   Section 4.   § 4.   Sec 4.
+    Returns the title with the numbering token removed and surrounding
+    whitespace cleaned up. Idempotent.
+    """
+    out = _NUMBER_PREFIX_RE.sub("", s, count=1)
+    return out.strip()
 
 
 def find_clause_by_title(clauses: List[Dict[str, Any]], title: str
                          ) -> Optional[Dict[str, Any]]:
-    """Case-insensitive exact match on stripped title; falls back to substring."""
-    needle = title.strip().lower()
+    """Resolve a user-supplied clause name to a clause.
+
+    Match order, on a normalized (lowercased, number-stripped) needle:
+      1. Exact match against any clause's title or its `aliases`.
+      2. Substring match against any clause's title or its `aliases`.
+
+    If step 2 matches more than one distinct clause, raises `VaultError`
+    listing the candidates so the caller can disambiguate. Returns `None`
+    only when there's no match at all (preserves existing API).
+    """
+    needle = _norm_clause_key(title)
+    if not needle:
+        return None
+    # Exact match: title first, then aliases.
     for c in clauses:
         if c["title"].lower() == needle:
             return c
     for c in clauses:
-        if needle in c["title"].lower():
+        if needle in (c.get("aliases") or []):
             return c
+    # Substring: collect distinct candidate clauses.
+    matches: List[Dict[str, Any]] = []
+    seen_starts: set = set()
+    for c in clauses:
+        candidates = [c["title"].lower()] + list(c.get("aliases") or [])
+        if any(needle in cand for cand in candidates):
+            if c["start"] not in seen_starts:
+                matches.append(c)
+                seen_starts.add(c["start"])
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(repr(c["title"]) for c in matches)
+        raise VaultError(
+            f"Clause name {title!r} is ambiguous; matches {len(matches)} clauses: "
+            f"{names}. Pass the full clause title to disambiguate."
+        )
     return None
 
 
@@ -891,7 +989,12 @@ def _load_template_text_and_clauses(root: Path, cat: str, name: str,
     f = resolve_version_file(t_dir, meta, version)
     text = f.read_text()
     explicit = meta.get("clauses")
-    clauses = detect_clauses(text, explicit_map=explicit if isinstance(explicit, list) else None)
+    aliases = meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None
+    clauses = detect_clauses(
+        text,
+        explicit_map=explicit if isinstance(explicit, list) else None,
+        aliases_map=aliases,
+    )
     return f, text, clauses, meta
 
 
@@ -907,6 +1010,8 @@ def cmd_clauses(args: argparse.Namespace) -> int:
     print(f"{cat}/{name}@{version or meta.get('latest_version')}  ({len(clauses)} clauses)")
     for c in clauses:
         print(f"  - {c['title']}    (anchor: {c['anchor']})")
+        if c.get("aliases"):
+            print(f"      aliases: {', '.join(c['aliases'])}")
     return 0
 
 
@@ -987,21 +1092,23 @@ def cmd_swap(args: argparse.Namespace) -> int:
     target_clauses = detect_clauses(
         target_text,
         explicit_map=target_meta.get("clauses") if isinstance(target_meta.get("clauses"), list) else None,
+        aliases_map=target_meta.get("clause_aliases") if isinstance(target_meta.get("clause_aliases"), dict) else None,
     )
     src_clauses = detect_clauses(
         src_text,
         explicit_map=src_meta.get("clauses") if isinstance(src_meta.get("clauses"), list) else None,
+        aliases_map=src_meta.get("clause_aliases") if isinstance(src_meta.get("clause_aliases"), dict) else None,
     )
     src_clause = find_clause_by_title(src_clauses, args.clause)
     if src_clause is None:
-        avail = ", ".join(c["title"] for c in src_clauses) or "(none detected)"
+        avail = ", ".join(c["title"] for c in src_clauses) or "(none detected — H2 headers missing? See `clauses` map in meta.json.)"
         raise VaultError(
             f"Clause {args.clause!r} not found in {src_cat}/{src_name}@{src_vid}. "
             f"Available: {avail}"
         )
     target_clause = find_clause_by_title(target_clauses, args.clause)
     if target_clause is None:
-        avail = ", ".join(c["title"] for c in target_clauses) or "(none detected)"
+        avail = ", ".join(c["title"] for c in target_clauses) or "(none detected — H2 headers missing? See `clauses` map in meta.json.)"
         raise VaultError(
             f"Clause {args.clause!r} not present in target {target_cat}/{target_name}. "
             f"Available: {avail}"
@@ -1124,14 +1231,17 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     latest_file = resolve_version_file(p_dir, p_meta, parent_latest)
     fork_text = fork_file.read_text()
     latest_text = latest_file.read_text()
-    fork_clauses = detect_clauses(fork_text, explicit_map=p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None)
-    latest_clauses = detect_clauses(latest_text, explicit_map=p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None)
+    p_aliases = p_meta.get("clause_aliases") if isinstance(p_meta.get("clause_aliases"), dict) else None
+    p_explicit = p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None
+    fork_clauses = detect_clauses(fork_text, explicit_map=p_explicit, aliases_map=p_aliases)
+    latest_clauses = detect_clauses(latest_text, explicit_map=p_explicit, aliases_map=p_aliases)
 
     derived_file = resolve_version_file(t_dir, meta, meta["latest_version"])
     derived_text = derived_file.read_text()
+    d_aliases = meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None
+    d_explicit = meta.get("clauses") if isinstance(meta.get("clauses"), list) else None
     derived_clauses = detect_clauses(
-        derived_text,
-        explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+        derived_text, explicit_map=d_explicit, aliases_map=d_aliases,
     )
 
     # Build per-clause diff fork→latest
@@ -1184,8 +1294,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         if decision == "y":
             # Re-detect derived clauses against current new_text
             cur_clauses = detect_clauses(
-                new_text,
-                explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+                new_text, explicit_map=d_explicit, aliases_map=d_aliases,
             )
             cur_target = find_clause_by_title(cur_clauses, fork_idx[title_lc]["title"])
             if cur_target is None:
@@ -1247,46 +1356,93 @@ def _slug_from_title(title: str) -> str:
     return s or "clause"
 
 
+def _strip_header_line(body: str) -> str:
+    """Drop the leading `## …` header from a clause body before similarity
+    comparison. Two clauses with different numbering ('## 4. Foo' vs '## 7. Foo')
+    have identical content but different headers; including the header line
+    depresses ratio() and under-clusters."""
+    return body.split("\n", 1)[1] if "\n" in body else ""
+
+
+class _UnionFind:
+    """Minimal string-keyed union-find for clause-title equivalence classes."""
+
+    def __init__(self) -> None:
+        self._parent: Dict[str, str] = {}
+
+    def add(self, x: str) -> None:
+        self._parent.setdefault(x, x)
+
+    def find(self, x: str) -> str:
+        self.add(x)
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]
+            x = self._parent[x]
+        return x
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            # Make the lexicographically smaller one the representative so the
+            # output is deterministic across runs.
+            self._parent[max(ra, rb)] = min(ra, rb)
+
+
 def cmd_clause_library(args: argparse.Namespace) -> int:
     root = find_vault_root()
     threshold = args.threshold
-    by_title: Dict[str, List[Tuple[str, str, str, str, str]]] = {}
+
+    # Pass 1: collect occurrences and build the title equivalence map.
+    Occurrence = Tuple[str, str, str, str, str, str]  # (cat, label, ver, raw_title, body, body_no_header)
+    per_template: List[Tuple[str, str, str, List[Dict[str, Any]], str]] = []
+    eq = _UnionFind()
     for cat, name, _path, meta in iter_templates(root):
         try:
             f = resolve_version_file(template_dir(root, cat, name), meta, None)
             text = f.read_text()
         except (VaultError, OSError):
             continue
-        clauses = detect_clauses(
-            text,
-            explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
-        )
+        explicit = meta.get("clauses") if isinstance(meta.get("clauses"), list) else None
+        aliases = meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None
+        clauses = detect_clauses(text, explicit_map=explicit, aliases_map=aliases)
+        per_template.append((cat, f"{cat}/{name}", meta.get("latest_version") or "?", clauses, text))
+        for c in clauses:
+            t = c["title"].lower()
+            eq.add(t)
+            for a in (c.get("aliases") or []):
+                eq.union(t, a)
+
+    # Pass 2: bucket occurrences by union-find representative.
+    by_repr: Dict[str, List[Occurrence]] = {}
+    for cat, label, ver, clauses, text in per_template:
         for c in clauses:
             body = slice_clause_text(text, c)
-            by_title.setdefault(c["title"].lower(), []).append(
-                (cat, f"{cat}/{name}", meta.get("latest_version") or "?", c["title"], body)
+            body_no_header = _strip_header_line(body)
+            key = eq.find(c["title"].lower())
+            by_repr.setdefault(key, []).append(
+                (cat, label, ver, c["title"], body, body_no_header)
             )
 
-    # Each cluster: dict(title, members=[(ref, ver)], mean_r, ref_body, ref_category)
+    # Pass 3: greedy clustering on header-stripped bodies.
     clusters: List[Dict[str, Any]] = []
-    for title_lc, occurrences in by_title.items():
+    for _key, occurrences in by_repr.items():
         if len(occurrences) < 2:
             continue
         used = [False] * len(occurrences)
         for i, ref in enumerate(occurrences):
             if used[i]:
                 continue
-            ref_cat, ref_label, ref_ver, ref_title, ref_body = ref
-            cluster_members = [(ref_label, ref_ver)]
+            ref_cat, ref_label, ref_ver, ref_title, ref_body, ref_body_h = ref
+            cluster_members = [(ref_label, ref_ver, ref_title)]
             ratios = [1.0]
             used[i] = True
             for j, other in enumerate(occurrences[i + 1:], start=i + 1):
                 if used[j]:
                     continue
-                _ocat, olabel, over, _otitle, obody = other
-                r = difflib.SequenceMatcher(None, ref_body, obody).ratio()
+                _ocat, olabel, over, otitle, _obody, obody_h = other
+                r = difflib.SequenceMatcher(None, ref_body_h, obody_h).ratio()
                 if r >= threshold:
-                    cluster_members.append((olabel, over))
+                    cluster_members.append((olabel, over, otitle))
                     ratios.append(r)
                     used[j] = True
             if len(cluster_members) >= 2:
@@ -1304,8 +1460,11 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
         return 0
     for c in clusters:
         print(f"- {c['title']}  (n={len(c['members'])}, mean_similarity={c['mean_r']:.2f})")
-        for ref, ver in c["members"]:
-            print(f"    · {ref}@{ver}")
+        for ref, ver, member_title in c["members"]:
+            if member_title.lower() != c["title"].lower():
+                print(f"    · {ref}@{ver}  (as {member_title!r})")
+            else:
+                print(f"    · {ref}@{ver}")
 
     if not args.extract:
         return 0
@@ -1337,7 +1496,7 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
                 continue
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Body already starts with the H2 header. Add a small provenance note.
-        members_str = ", ".join(f"{ref}@{ver}" for ref, ver in c["members"])
+        members_str = ", ".join(f"{ref}@{ver}" for ref, ver, _t in c["members"])
         provenance = (
             f"<!-- extracted by template-vault clause-library on {_today_iso()} "
             f"from: {members_str} -->\n\n"
@@ -1395,6 +1554,7 @@ def _ask_build_listing(root: Path, top_k: int, with_content: bool,
             clauses = detect_clauses(
                 text,
                 explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+                aliases_map=meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None,
             )
         except (VaultError, OSError):
             text, clauses = "", []
@@ -1726,6 +1886,25 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
                             issues.append(
                                 f"{cat_dir.name}/{t_dir.name}: explicit clause anchor not found: "
                                 f"{entry.get('anchor')!r}"
+                            )
+                except (VaultError, OSError):
+                    pass
+            # clause_aliases keys must match a real detected clause title.
+            aliases_map = meta.get("clause_aliases")
+            if isinstance(aliases_map, dict) and aliases_map:
+                try:
+                    f = resolve_version_file(t_dir, meta, None)
+                    text = f.read_text()
+                    cs = detect_clauses(
+                        text,
+                        explicit_map=explicit if isinstance(explicit, list) else None,
+                    )
+                    detected_titles = {c["title"].lower() for c in cs}
+                    for canonical in aliases_map:
+                        if _norm_clause_key(canonical) not in detected_titles:
+                            issues.append(
+                                f"{cat_dir.name}/{t_dir.name}: clause_aliases key "
+                                f"{canonical!r} doesn't match any detected clause title"
                             )
                 except (VaultError, OSError):
                     pass
