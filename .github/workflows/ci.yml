@@ -47,9 +47,10 @@ jobs:
       - name: Smoke test
         shell: bash
         run: |
+          set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
           template-vault --version
-          mkdir /tmp/tv-smoke && cd /tmp/tv-smoke
+          rm -rf /tmp/tv-smoke && mkdir -p /tmp/tv-smoke && cd /tmp/tv-smoke
           template-vault init
           template-vault sources
 

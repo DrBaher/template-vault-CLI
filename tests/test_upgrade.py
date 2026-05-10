@@ -89,6 +89,29 @@ class UpgradeTests(CliCase):
         self.assertNotEqual(code, 0)
         self.assertIn("derived_from", err)
 
+    def test_upgrade_dry_run_does_not_write(self):
+        _add_v2_to_parent(self.vault, "nda", "house-mutual", PARENT_V2_BODY)
+        derived = self.vault / "nda" / "house-mutual-startup"
+        meta_before = (derived / "meta.json").read_text()
+        code, out, _err = run_cli(
+            "upgrade", "nda/house-mutual-startup", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertIn("dry-run", out)
+        self.assertIn("would accept", out)
+        # No new version file written
+        self.assertFalse((derived / "v2.md").exists())
+        # meta untouched
+        self.assertEqual((derived / "meta.json").read_text(), meta_before)
+
+    def test_upgrade_dry_run_no_changes_does_not_bump_forked_at(self):
+        # Parent unchanged → dry-run should report up-to-date and NOT touch meta.
+        derived = self.vault / "nda" / "house-mutual-startup"
+        meta_before = (derived / "meta.json").read_text()
+        code, _out, _err = run_cli(
+            "upgrade", "nda/house-mutual-startup", "--dry-run")
+        self.assertEqual(code, 0)
+        self.assertEqual((derived / "meta.json").read_text(), meta_before)
+
 
 if __name__ == "__main__":
     unittest.main()
