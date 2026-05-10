@@ -1,9 +1,10 @@
-.PHONY: help test test-quick build install clean smoke lint
+.PHONY: help test test-quick build install clean smoke lint coverage
 
 help:
 	@echo "Targets:"
 	@echo "  test         Run the full test suite"
 	@echo "  test-quick   Run a quick subset (no slow paths)"
+	@echo "  coverage     Run tests under coverage.py and print a report"
 	@echo "  build        Build wheel + sdist into dist/"
 	@echo "  install      pipx install from current source"
 	@echo "  smoke        Build, pipx install, run end-to-end smoke"
@@ -14,6 +15,12 @@ test:
 
 test-quick:
 	python -m unittest discover -s tests -p 'test_meta_schema.py' -v
+
+coverage:
+	python -m pip install --quiet --upgrade 'coverage>=7.0'
+	python -m coverage erase
+	python -m coverage run -m unittest discover -s tests -v
+	python -m coverage report
 
 build:
 	python -m pip install --quiet --upgrade build hatchling
