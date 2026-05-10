@@ -96,6 +96,47 @@ class AskWithContentTests(CliCase):
                 self.assertEqual(code, 0)
 
 
+class AskJsonOutputTests(CliCase):
+    def test_json_emits_blob_alongside_prose(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness("use nda/house-mutual")
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, out, _err = run_cli("ask", "x", "--json")
+                self.assertEqual(code, 0)
+            # Both prose and JSON appear in stdout
+            self.assertIn("use nda/house-mutual", out)
+            # JSON blob parses out of the stdout (last { … } object)
+            blob = out[out.index("{"):]
+            doc = json.loads(blob)
+            self.assertEqual(doc["query"], "x")
+            self.assertEqual(doc["answer"], "use nda/house-mutual")
+            self.assertIn("candidates", doc)
+
+    def test_quiet_with_json_suppresses_prose(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness("use nda/house-mutual")
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, out, _err = run_cli("ask", "x", "--json", "--quiet")
+                self.assertEqual(code, 0)
+            # stdout is JSON only — should parse cleanly from offset 0
+            doc = json.loads(out)
+            self.assertEqual(doc["answer"], "use nda/house-mutual")
+
+    def test_quiet_without_json_errors(self):
+        with temp_vault() as v:
+            _seed_vault(v)
+            harness = _AskHarness("use nda/house-mutual")
+            with mock.patch.dict(os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+                 mock.patch.object(tvc, "_llm_request", harness):
+                code, _out, err = run_cli("ask", "x", "--quiet")
+                self.assertNotEqual(code, 0)
+                self.assertIn("--quiet only makes sense with --json", err)
+
+
 class AskMissingApiKeyTests(CliCase):
     def test_friendly_error_when_no_api_key(self):
         with temp_vault() as v:
