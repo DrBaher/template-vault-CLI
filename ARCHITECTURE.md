@@ -173,6 +173,51 @@ For a derived template `nda/house-mutual-startup` whose `derived_from` is
 This means a derived template's locally-swapped clauses are stable across
 parent updates — exactly the behavior an LLM-only workflow can't promise.
 
+## Clause library (cross-template extraction)
+
+`clause-library` finds clauses that recur near-identically across multiple
+templates and (optionally) extracts the canonical text into a reusable file
+under `clauses/<category>/<slug>.md`.
+
+### Clustering
+
+1. **Group by title.** Walk every template, detect clauses, and bucket them by
+   case-folded clause title. Single-occurrence titles are dropped.
+2. **Cluster within a title bucket.** Greedy single-pass: take the first
+   unconsumed occurrence as the cluster seed, then add any other occurrence
+   whose body's `difflib.SequenceMatcher.ratio()` against the seed is at least
+   `--threshold` (default `0.85`). Members consumed by one cluster cannot start
+   or join another. This is O(n²) per title bucket but n is small in practice.
+3. **Sort clusters** by descending member count, then descending mean
+   similarity, then alphabetically by title.
+
+The threshold is intentionally tunable. `0.85` catches "same clause with party
+names swapped"; `0.95` only catches near-byte-identical copies; `0.70` starts
+catching clauses that have been edited but share structure.
+
+### Extraction
+
+`--extract` writes each cluster's seed body (which already starts with its `##`
+header) to `clauses/<seed-template-category>/<slug>.md`. The slug is the title
+lowercased, hyphenated, stripped of non-`[a-z0-9-]` chars. A provenance HTML
+comment is prepended:
+
+```
+<!-- extracted by template-vault clause-library on 2026-05-10 from: nda/house@v3, nda/yc@v1 -->
+
+## Term and Survival
+…
+```
+
+Existing files are preserved; the command never overwrites. In an interactive
+TTY the user confirms each cluster individually (`[y/N]`); in a non-interactive
+context the command refuses unless `--yes-extract-all` is passed, which writes
+every cluster non-interactively.
+
+The `clauses/` directory is **not** itself a template directory — `iter_templates`
+skips a top-level `clauses/` folder so extracted clause files don't show up in
+`list`, `find`, or future `clause-library` runs.
+
 ## LLM `ask` design
 
 ```
@@ -206,10 +251,17 @@ The system prompt is:
 > that appear in the listing. Do NOT invent templates or clauses that aren't
 > in the list. Reply in plain text, not JSON.*
 
-`ask` does **not** auto-execute LLM-suggested commands. The LLM emits literal
-`template-vault swap …` strings; the user copies them into a shell. This keeps
-the loop deterministic and reviewable, and it means an LLM hallucination
+By default, `ask` does **not** execute LLM-suggested commands. The LLM emits
+literal `template-vault swap …` strings and the user copies them into a shell.
+This keeps the loop deterministic and reviewable, and an LLM hallucination
 becomes an obvious "command not found" rather than a corrupted template.
+
+`ask --execute` opts into running suggestions automatically, with two
+guardrails: (1) only `compose` and `swap` lines are eligible — `upload`,
+`import`, `publish`, etc. are skipped with a notice; (2) the chain stops on the
+first command that exits non-zero. In interactive contexts the user confirms
+with `[y/N]`; non-interactive contexts must pass `--yes-execute`. See
+[SECURITY.md](SECURITY.md) for the full whitelist rationale.
 
 ## Privacy posture
 

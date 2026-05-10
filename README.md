@@ -56,6 +56,48 @@ template-vault clause-library --threshold 0.85
 Every swap appends to `clause_overrides` in `meta.json`, so you (and `upgrade`)
 always know which clauses came from where.
 
+## Quick tour
+
+A 30-second session in a fresh directory, captured verbatim from `make smoke`:
+
+```console
+$ template-vault init
+initialized vault at /tmp/tv-smoke
+
+$ template-vault upload house.md --category nda --name house --summary "house mutual" --non-interactive
+wrote nda/house@v1
+
+$ template-vault upload yc.md --category nda --name yc --summary "yc-style" --non-interactive
+wrote nda/yc@v1
+
+$ template-vault clauses nda/house
+- Purpose
+- Term and Survival
+
+$ template-vault compose --base nda/house --as nda/house-startup
+forked nda/house@v1 → nda/house-startup@v1
+
+$ template-vault swap nda/house-startup --clause "Term and Survival" --from nda/yc
+swapped "Term and Survival" from nda/yc@v1 → nda/house-startup
+nda/house-startup is now at v2
+
+$ template-vault info nda/house-startup
+nda/house-startup@v2  (latest)
+  derived_from:              nda/house@v1
+  forked_at_parent_version:  v1
+  clause_overrides:          1
+    - "Term and Survival"  ← nda/yc@v1  (2026-05-10)
+
+$ template-vault doctor
+1 categories, 3 templates, 4 versions — all good.
+```
+
+What happened: forked a house template, swapped one clause from another
+template into the fork, and `meta.json` recorded the provenance. If `nda/house`
+gets a `v2` later, `template-vault upgrade nda/house-startup` will pull the
+parent's other clause changes in but leave the swapped "Term and Survival"
+alone — that's the whole point of recording the override.
+
 ## Command reference
 
 ```
@@ -76,11 +118,12 @@ template-vault clauses          <category>/<name>
 template-vault compose          --base <ref> --as <category>/<new-name>
 template-vault swap             <target> --clause "<title>" --from <ref>
 template-vault compare-clauses  <a> <b> [--clause "<title>"]
-template-vault upgrade          <ref> [--accept-all]
+template-vault upgrade          <ref> [--accept-all] [--dry-run]
 template-vault clause-library   [--threshold 0.85] [--extract]
 
 # LLM (opt-in, metadata-only by default)
 template-vault ask "<query>" [--with-content] [--top-k 5] [--llm anthropic]
+template-vault ask "<query>" --json [--quiet]            # quiet → JSON-only stdout
 template-vault ask "<query>" --execute [--yes-execute]   # run LLM-emitted compose/swap
 
 # Public sources

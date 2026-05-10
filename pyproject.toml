@@ -37,6 +37,22 @@ classifiers = [
 # No runtime dependencies. Stdlib-only by design.
 dependencies = []
 
+[project.optional-dependencies]
+dev = ["coverage>=7.0"]
+
+[tool.coverage.run]
+source = ["template_vault_cli"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
+
 [project.urls]
 Homepage = "https://github.com/DrBaher/template-vault-cli"
 Source = "https://github.com/DrBaher/template-vault-cli"

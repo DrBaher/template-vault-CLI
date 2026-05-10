@@ -1145,6 +1145,9 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     accepted = 0
     skipped_overridden = 0
     new_text = derived_text
+    dry_run = getattr(args, "dry_run", False)
+    if dry_run:
+        print(f"(dry-run: showing changes from {p_cat}/{p_name}@{parent_v_at_fork} → {parent_latest}; nothing will be written)")
     # Re-detect each iteration since indices shift after replacement
     for title_lc in sorted(set(fork_idx) & set(latest_idx)):
         fb = slice_clause_text(fork_text, fork_idx[title_lc])
@@ -1168,6 +1171,9 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             n=2,
         ):
             sys.stdout.write(line)
+        if dry_run:
+            accepted += 1
+            continue
         if args.accept_all:
             decision = "y"
         else:
@@ -1196,8 +1202,15 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
 
     if accepted == 0 and skipped_overridden == 0:
         print(f"No upstream changes to merge from {p_cat}/{p_name}@{parent_latest}.")
-        meta["forked_at_parent_version"] = parent_latest
-        save_meta(t_dir, meta)
+        if not dry_run:
+            meta["forked_at_parent_version"] = parent_latest
+            save_meta(t_dir, meta)
+        return 0
+
+    if dry_run:
+        print(f"\n(dry-run summary) would accept {accepted} clause change(s); "
+              f"{skipped_overridden} skipped due to local swap. "
+              f"Re-run without --dry-run to apply.")
         return 0
 
     # Write a new version
@@ -1431,7 +1444,11 @@ def cmd_ask(args: argparse.Namespace) -> int:
     user_msg = f"Templates:\n\n{listing}\n\nUser query: {args.query}"
     cfg = _load_llm_config(args)
     text = _llm_request(cfg, system=_ASK_SYSTEM, user=user_msg)
-    print(text.strip())
+    quiet_json = getattr(args, "quiet", False)
+    if quiet_json and not args.json:
+        raise VaultError("--quiet only makes sense with --json")
+    if not quiet_json:
+        print(text.strip())
     if args.json:
         # Also emit a structured summary on stdout (callers can parse separately)
         json.dump(
@@ -1824,6 +1841,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_up2 = sub.add_parser("upgrade", help="Pull parent-template changes into a derived template")
     p_up2.add_argument("ref")
     p_up2.add_argument("--accept-all", action="store_true")
+    p_up2.add_argument("--dry-run", action="store_true",
+                       help="Show what would change without writing a new version")
     p_up2.set_defaults(func=cmd_upgrade)
 
     p_lib = sub.add_parser("clause-library", help="Find repeated clauses across the vault")
@@ -1843,6 +1862,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Skip the --with-content confirmation prompt")
     p_ask.add_argument("--json", action="store_true",
                        help="Also print a JSON blob of {query, candidates, answer}")
+    p_ask.add_argument("--quiet", action="store_true",
+                       help="With --json, suppress the human-readable answer "
+                            "(stdout becomes JSON only)")
     p_ask.add_argument("--execute", action="store_true",
                        help="Parse the LLM response for `template-vault compose` / "
                             "`swap` lines and run them. Other subcommands are skipped.")
