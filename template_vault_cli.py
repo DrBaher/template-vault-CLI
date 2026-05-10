@@ -1,0 +1,1756 @@
+#!/usr/bin/env python3
+"""template-vault-cli — Git-backed, clause-aware legal-document template manager.
+
+Single-file Python CLI. Stdlib-only. MIT licensed.
+
+Storage model: a Git repository whose top-level directories are categories
+(nda, employment, licensing, investment, msa, dpa, ...). Each template is a
+directory containing one or more versioned files plus exactly one meta.json.
+
+Design ethos (shared with the rest of the suite):
+  - Local-first by default; any network call is opt-in and disclosed.
+  - Deterministic where possible; same input + config = same output.
+  - Audit-friendly: provenance recorded in meta.json, not inferred.
+  - Composable: standard files in, standard files out.
+  - The CLI structures existing templates; it does NOT generate clause text.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import difflib
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+__version__ = "0.1.0"
+
+VAULT_CONFIG_FILENAME = ".vault.json"
+META_FILENAME = "meta.json"
+SCHEMA_VERSION = 1
+
+KNOWN_CATEGORIES = {
+    "nda",
+    "employment",
+    "licensing",
+    "investment",
+    "msa",
+    "dpa",
+    "ip-assignment",
+    "term-sheet",
+    "consulting",
+    "saas",
+    "service",
+    "other",
+}
+
+NO_CONFIRM_ENV = "NDA_VAULT_NO_CONFIRM"
+LLM_ENV_PREFIX = "NDA_VAULT_LLM_"
+
+REQUIRED_META_FIELDS = ("name", "category", "latest_version", "versions")
+META_DEFAULTS = {
+    "jurisdiction": [],
+    "party_type": [],
+    "deal_type": [],
+    "tags": [],
+    "owner": None,
+    "license": "private",
+    "source": None,
+    "uploaded_by": None,
+    "use_count": 0,
+    "last_used": None,
+    "summary": "",
+    "derived_from": None,
+    "forked_at_parent_version": None,
+    "clauses": None,
+    "clause_overrides": [],
+}
+
+# Auto-detect clause headers by H2 only (not H3+). Anchored at line start.
+H2_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class VaultError(Exception):
+    """User-actionable error. Caller prints message and exits non-zero."""
+
+
+class NotFoundError(VaultError):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+
+
+def _eprint(*args: Any, **kwargs: Any) -> None:
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def _now_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _today_iso() -> str:
+    return _dt.date.today().isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Vault discovery + config
+# ---------------------------------------------------------------------------
+
+
+def find_vault_root(start: Optional[Path] = None) -> Path:
+    """Walk upward from `start` (cwd by default) looking for .vault.json."""
+    p = (start or Path.cwd()).resolve()
+    for parent in [p] + list(p.parents):
+        if (parent / VAULT_CONFIG_FILENAME).exists():
+            return parent
+    raise NotFoundError(
+        f"No vault found. Run `template-vault init` in the directory you want "
+        f"to use as the vault root, or `cd` into an existing vault."
+    )
+
+
+def read_vault_config(root: Path) -> Dict[str, Any]:
+    cfg_path = root / VAULT_CONFIG_FILENAME
+    try:
+        return json.loads(cfg_path.read_text())
+    except FileNotFoundError as e:
+        raise NotFoundError(f"Vault config missing: {cfg_path}") from e
+    except json.JSONDecodeError as e:
+        raise VaultError(f"Malformed {VAULT_CONFIG_FILENAME}: {e.msg} (line {e.lineno})") from e
+
+
+def write_vault_config(root: Path, cfg: Dict[str, Any]) -> None:
+    (root / VAULT_CONFIG_FILENAME).write_text(_dump_json(cfg))
+
+
+def validate_vault_config(cfg: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    if not isinstance(cfg, dict):
+        return ["vault config must be a JSON object"]
+    if cfg.get("schema_version") != SCHEMA_VERSION:
+        errors.append(
+            f"vault schema_version is {cfg.get('schema_version')!r}, expected {SCHEMA_VERSION}"
+        )
+    sources = cfg.get("sources")
+    if sources is not None and not isinstance(sources, list):
+        errors.append("'sources' must be a list when present")
+    return errors
+
+
+# ---------------------------------------------------------------------------
+# meta.json operations
+# ---------------------------------------------------------------------------
+
+
+def _dump_json(obj: Any) -> str:
+    """Stable JSON dump with trailing newline for clean diffs."""
+    return json.dumps(obj, indent=2, sort_keys=False, ensure_ascii=False) + "\n"
+
+
+def template_dir(root: Path, category: str, name: str) -> Path:
+    return root / category / name
+
+
+def load_meta(t_dir: Path) -> Dict[str, Any]:
+    mp = t_dir / META_FILENAME
+    if not mp.exists():
+        raise NotFoundError(f"Missing {META_FILENAME} in {t_dir}")
+    try:
+        meta = json.loads(mp.read_text())
+    except json.JSONDecodeError as e:
+        raise VaultError(f"Malformed {mp}: {e.msg}") from e
+    return meta
+
+
+def save_meta(t_dir: Path, meta: Dict[str, Any]) -> None:
+    (t_dir / META_FILENAME).write_text(_dump_json(meta))
+
+
+def validate_meta(meta: Dict[str, Any]) -> List[str]:
+    """Return a list of human-readable error strings; empty list if valid."""
+    errors: List[str] = []
+    if not isinstance(meta, dict):
+        return ["meta.json must be a JSON object"]
+    for f in REQUIRED_META_FIELDS:
+        if f not in meta:
+            errors.append(f"missing required field: {f}")
+    versions = meta.get("versions")
+    if isinstance(versions, list):
+        seen = set()
+        for v in versions:
+            if not isinstance(v, dict) or "id" not in v:
+                errors.append("each version must be an object with an 'id'")
+                continue
+            vid = v["id"]
+            if vid in seen:
+                errors.append(f"duplicate version id: {vid}")
+            seen.add(vid)
+            sup = v.get("supersedes")
+            if sup is not None and sup not in seen and sup != v.get("id"):
+                # supersedes can point to a not-yet-listed prior; relax:
+                pass
+        latest = meta.get("latest_version")
+        if latest and latest not in {v.get("id") for v in versions if isinstance(v, dict)}:
+            errors.append(f"latest_version {latest!r} is not present in versions[]")
+    elif "versions" in meta:
+        errors.append("'versions' must be a list")
+    cat = meta.get("category")
+    if cat is not None and cat not in KNOWN_CATEGORIES:
+        # warning, not blocking — vault can use ad-hoc categories
+        pass
+    return errors
+
+
+def fill_meta_defaults(meta: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(meta)
+    for k, v in META_DEFAULTS.items():
+        out.setdefault(k, v if not isinstance(v, (list, dict)) else type(v)(v))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Vault enumeration
+# ---------------------------------------------------------------------------
+
+
+def iter_templates(root: Path) -> Iterable[Tuple[str, str, Path, Dict[str, Any]]]:
+    """Yield (category, name, path, meta) for every template in the vault."""
+    for cat_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        if cat_dir.name in {"config", "tests", ".git", ".github"}:
+            continue
+        for t_dir in sorted(p for p in cat_dir.iterdir() if p.is_dir()):
+            if (t_dir / META_FILENAME).exists():
+                try:
+                    meta = load_meta(t_dir)
+                except VaultError:
+                    continue
+                yield cat_dir.name, t_dir.name, t_dir, meta
+
+
+def parse_ref(ref: str) -> Tuple[str, str, Optional[str]]:
+    """Parse 'category/name[@version]' into a 3-tuple."""
+    version = None
+    body = ref
+    if "@" in ref:
+        body, version = ref.rsplit("@", 1)
+        if not version:
+            raise VaultError(f"Invalid reference {ref!r}: empty version after '@'")
+    if "/" not in body:
+        raise VaultError(
+            f"Invalid template reference {ref!r}: expected 'category/name[@version]'"
+        )
+    cat, name = body.split("/", 1)
+    if not cat or not name:
+        raise VaultError(f"Invalid reference {ref!r}: empty category or name")
+    return cat, name, version
+
+
+def resolve_version_file(t_dir: Path, meta: Dict[str, Any], version: Optional[str]) -> Path:
+    """Find the file on disk for a given version (or @latest)."""
+    versions = meta.get("versions") or []
+    vid = version or meta.get("latest_version")
+    if not vid or vid == "latest":
+        vid = meta.get("latest_version")
+    if not vid:
+        raise NotFoundError(f"Template {t_dir} has no versions recorded")
+    if vid not in {v.get("id") for v in versions}:
+        raise NotFoundError(
+            f"Version {vid!r} not found. Available: "
+            + ", ".join(v.get("id", "?") for v in versions)
+        )
+    candidates = sorted(t_dir.glob(f"{vid}.*"))
+    candidates = [c for c in candidates if c.name != META_FILENAME]
+    if not candidates:
+        raise NotFoundError(f"No file on disk for version {vid!r} in {t_dir}")
+    if len(candidates) > 1:
+        # Prefer markdown if multiple extensions
+        md = [c for c in candidates if c.suffix.lower() == ".md"]
+        if md:
+            return md[0]
+    return candidates[0]
+
+
+def auto_increment_version(meta: Dict[str, Any]) -> str:
+    """Pick next version id (v1, v2, ...) based on existing list."""
+    existing = {v.get("id", "") for v in meta.get("versions") or []}
+    n = 1
+    while f"v{n}" in existing:
+        n += 1
+    return f"v{n}"
+
+
+# ---------------------------------------------------------------------------
+# Clause detection + manipulation
+# ---------------------------------------------------------------------------
+
+
+def detect_clauses(text: str, explicit_map: Optional[List[Dict[str, str]]] = None
+                   ) -> List[Dict[str, Any]]:
+    """Return [{title, anchor, start, end}, ...] for each clause in `text`.
+
+    H2 (`## ...`) only — H3+ subsections stay inside the parent clause body.
+
+    If `explicit_map` is given, use those anchors instead. Anchors must be the
+    full header line as it appears in the file ("## 1. Purpose"); we locate
+    each one by string match. Body extends from the matched line to the next
+    matched anchor (or EOF).
+    """
+    if explicit_map:
+        return _detect_from_explicit(text, explicit_map)
+    matches = list(H2_RE.finditer(text))
+    out: List[Dict[str, Any]] = []
+    for i, m in enumerate(matches):
+        title = _strip_clause_number(m.group(1).strip())
+        anchor = m.group(0)
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        out.append({"title": title, "anchor": anchor, "start": start, "end": end})
+    return out
+
+
+def _detect_from_explicit(text: str, explicit_map: List[Dict[str, str]]
+                          ) -> List[Dict[str, Any]]:
+    located: List[Tuple[int, str, str]] = []
+    for entry in explicit_map:
+        anchor = entry.get("anchor", "")
+        title = entry.get("title", "").strip()
+        if not anchor or not title:
+            continue
+        idx = text.find(anchor)
+        if idx == -1:
+            # Skip silently; doctor surfaces these.
+            continue
+        located.append((idx, title, anchor))
+    located.sort()
+    out: List[Dict[str, Any]] = []
+    for i, (start, title, anchor) in enumerate(located):
+        end = located[i + 1][0] if i + 1 < len(located) else len(text)
+        out.append({"title": title, "anchor": anchor, "start": start, "end": end})
+    return out
+
+
+def _strip_clause_number(s: str) -> str:
+    """Normalize '1. Purpose' or '1) Purpose' → 'Purpose' for matching by title."""
+    return re.sub(r"^\s*\d+[.\)]\s*", "", s)
+
+
+def find_clause_by_title(clauses: List[Dict[str, Any]], title: str
+                         ) -> Optional[Dict[str, Any]]:
+    """Case-insensitive exact match on stripped title; falls back to substring."""
+    needle = title.strip().lower()
+    for c in clauses:
+        if c["title"].lower() == needle:
+            return c
+    for c in clauses:
+        if needle in c["title"].lower():
+            return c
+    return None
+
+
+def slice_clause_text(text: str, clause: Dict[str, Any]) -> str:
+    """Extract clause body including its header line."""
+    return text[clause["start"]:clause["end"]]
+
+
+def replace_clause(text: str, target: Dict[str, Any], replacement_body: str) -> str:
+    """Replace a clause's region in `text` with `replacement_body`.
+
+    `replacement_body` should already include its own H2 header line. We DO NOT
+    rewrite the header to match the target — the caller is responsible. By
+    default the swap command preserves the *target's* header so numbering stays
+    consistent (see cmd_swap).
+    """
+    if not replacement_body.endswith("\n"):
+        replacement_body += "\n"
+    # Ensure the prior segment ends with a single trailing newline before the
+    # replacement, and the replacement is followed by a newline before the
+    # next clause begins. This keeps round-trips clean.
+    before = text[:target["start"]]
+    after = text[target["end"]:]
+    if before and not before.endswith("\n"):
+        before += "\n"
+    return before + replacement_body + after
+
+
+# ---------------------------------------------------------------------------
+# Git operations
+# ---------------------------------------------------------------------------
+
+
+def _git(args: List[str], cwd: Path, check: bool = True,
+         capture: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=check,
+        capture_output=capture,
+        text=True,
+    )
+
+
+def _git_init(root: Path, bare: bool = False) -> None:
+    args = ["init"]
+    if bare:
+        args.append("--bare")
+    _git(args, root, check=True)
+
+
+# ---------------------------------------------------------------------------
+# Hashing
+# ---------------------------------------------------------------------------
+
+
+def sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# LLM config + adapters
+# ---------------------------------------------------------------------------
+
+
+def _load_llm_config(args_ns: argparse.Namespace) -> Dict[str, Any]:
+    """Resolve LLM config from (in order): CLI flags > env > shared config files.
+
+    Falls back silently to an empty dict; commands that need an API key surface
+    a friendly error if they don't get one.
+    """
+    cfg: Dict[str, Any] = {}
+    candidates = [
+        Path.home() / ".config" / "nda-review-cli" / "llm.json",
+        Path.home() / ".config" / "template-vault-cli" / "llm.json",
+        Path.cwd() / "config" / "llm.json",
+    ]
+    for p in candidates:
+        if p.exists():
+            try:
+                data = json.loads(p.read_text())
+                if isinstance(data, dict):
+                    cfg.update({k: v for k, v in data.items() if not k.startswith("_")})
+                    break
+            except (json.JSONDecodeError, OSError):
+                continue
+    for env_key, cfg_key in (
+        ("PROVIDER", "provider"),
+        ("MODEL", "model"),
+        ("API_KEY", "api_key"),
+        ("BASE_URL", "base_url"),
+    ):
+        env_val = os.environ.get(LLM_ENV_PREFIX + env_key)
+        if env_val:
+            cfg[cfg_key] = env_val
+    if getattr(args_ns, "llm", None):
+        cfg["provider"] = args_ns.llm
+    if getattr(args_ns, "llm_model", None):
+        cfg["model"] = args_ns.llm_model
+    if getattr(args_ns, "llm_base_url", None):
+        cfg["base_url"] = args_ns.llm_base_url
+    return cfg
+
+
+def _llm_request(cfg: Dict[str, Any], system: str, user: str,
+                 timeout: int = 60) -> str:
+    """Send a chat-completion-style request and return the assistant text.
+
+    Supports two providers:
+      - 'anthropic' → POST https://api.anthropic.com/v1/messages
+      - 'openai'    → POST {base_url or https://api.openai.com/v1}/chat/completions
+
+    'openai' covers OpenAI, Ollama, OpenRouter, vLLM, LM Studio.
+    """
+    provider = (cfg.get("provider") or "anthropic").lower()
+    api_key = cfg.get("api_key")
+    model = cfg.get("model") or ("claude-sonnet-4-6" if provider == "anthropic" else "gpt-4o-mini")
+    if not api_key:
+        raise VaultError(
+            "No LLM API key found. Set NDA_VAULT_LLM_API_KEY or write "
+            "~/.config/template-vault-cli/llm.json (see config/llm.json.example)."
+        )
+    if provider == "anthropic":
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body = json.dumps({
+            "model": model,
+            "max_tokens": 1024,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }).encode("utf-8")
+    else:  # openai-compatible
+        base = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+        url = f"{base}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        body = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": 1024,
+        }).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise VaultError(f"LLM HTTP {e.code}: {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise VaultError(f"LLM network error: {e.reason}") from e
+    if provider == "anthropic":
+        try:
+            return "".join(p.get("text", "") for p in data["content"])
+        except (KeyError, TypeError) as e:
+            raise VaultError(f"Unexpected Anthropic response shape: {e}") from e
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise VaultError(f"Unexpected OpenAI-compatible response shape: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Sources registry
+# ---------------------------------------------------------------------------
+
+
+def _sources_path() -> Path:
+    return Path(__file__).resolve().parent / "config" / "default-sources.json"
+
+
+def load_sources_registry() -> Dict[str, Any]:
+    p = _sources_path()
+    if not p.exists():
+        return {"schema_version": SCHEMA_VERSION, "sources": []}
+    return json.loads(p.read_text())
+
+
+def _fetch_url(url: str, timeout: int = 30) -> bytes:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": f"template-vault-cli/{__version__}"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+# ---------------------------------------------------------------------------
+# Command: init
+# ---------------------------------------------------------------------------
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    target = Path(args.path or ".").resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    cfg_path = target / VAULT_CONFIG_FILENAME
+    if cfg_path.exists():
+        _eprint(f"Vault already initialized at {target}")
+        return 0
+    cfg = {
+        "schema_version": SCHEMA_VERSION,
+        "created": _today_iso(),
+        "defaults": {"license": "private"},
+        "sources": [],
+    }
+    write_vault_config(target, cfg)
+    if not (target / ".git").exists() and not args.bare:
+        try:
+            _git_init(target, bare=False)
+        except subprocess.CalledProcessError as e:
+            _eprint(f"warning: git init failed: {e.stderr or e}")
+    elif args.bare:
+        try:
+            _git_init(target, bare=True)
+        except subprocess.CalledProcessError as e:
+            _eprint(f"warning: git init --bare failed: {e.stderr or e}")
+    print(f"Initialized vault at {target}")
+    print("Next: `template-vault sources` to see available imports, or "
+          "`template-vault upload <file> --category nda --name house-mutual`.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: upload
+# ---------------------------------------------------------------------------
+
+
+def _prompt(label: str, default: Optional[str] = None,
+            non_interactive: bool = False) -> str:
+    if non_interactive:
+        return default or ""
+    prompt = f"{label}"
+    if default:
+        prompt += f" [{default}]"
+    prompt += ": "
+    try:
+        ans = input(prompt).strip()
+    except EOFError:
+        ans = ""
+    return ans or (default or "")
+
+
+def cmd_upload(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    src = Path(args.file).resolve()
+    if not src.is_file():
+        raise VaultError(f"Source file not found: {src}")
+    category = args.category
+    name = args.name
+    if not category or not name:
+        raise VaultError("--category and --name are required")
+    t_dir = template_dir(root, category, name)
+    new = not t_dir.exists()
+    t_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load or initialize meta
+    if (t_dir / META_FILENAME).exists():
+        meta = load_meta(t_dir)
+    else:
+        meta = {
+            "name": name,
+            "category": category,
+            "latest_version": None,
+            "versions": [],
+        }
+    meta = fill_meta_defaults(meta)
+
+    # Determine version id
+    vid = args.version or auto_increment_version(meta)
+    if vid in {v.get("id") for v in meta["versions"]}:
+        raise VaultError(f"Version {vid!r} already exists for {category}/{name}")
+
+    # Copy file
+    dest = t_dir / f"{vid}{src.suffix.lower() or '.md'}"
+    dest.write_bytes(src.read_bytes())
+
+    # Append version entry
+    entry = {
+        "id": vid,
+        "added": _today_iso(),
+        "supersedes": args.supersedes,
+        "changelog": args.changelog or ("initial" if not meta["versions"] else f"superseded {args.supersedes or ''}".strip()),
+    }
+    meta["versions"].append(entry)
+    meta["latest_version"] = vid
+
+    # Update prior version's supersedes_by, if applicable
+    if args.supersedes:
+        for v in meta["versions"]:
+            if v.get("id") == args.supersedes:
+                v["supersedes_by"] = vid
+
+    # Required-ish fields
+    summary = args.summary
+    if not summary and not args.non_interactive:
+        summary = _prompt(
+            "Summary (one or two sentences — used for LLM recall)",
+            default=meta.get("summary") or "",
+        )
+    if summary is not None:
+        meta["summary"] = summary
+
+    if args.tags:
+        existing = set(meta.get("tags") or [])
+        new_tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+        meta["tags"] = sorted(existing.union(new_tags))
+    if args.jurisdiction:
+        existing = set(meta.get("jurisdiction") or [])
+        new_j = [j.strip() for j in args.jurisdiction.split(",") if j.strip()]
+        meta["jurisdiction"] = sorted(existing.union(new_j))
+    if args.party_type:
+        meta["party_type"] = sorted(set((meta.get("party_type") or []) + [args.party_type]))
+    if args.deal_type:
+        meta["deal_type"] = sorted(set((meta.get("deal_type") or []) + [args.deal_type]))
+    if args.license:
+        meta["license"] = args.license
+    if args.owner:
+        meta["owner"] = args.owner
+    if args.uploaded_by:
+        meta["uploaded_by"] = args.uploaded_by
+    if args.source:
+        meta["source"] = args.source
+
+    # Optional LLM-generated summary (opt-in)
+    if args.llm_summarize:
+        try:
+            content = src.read_text(errors="replace")[:8000]
+        except OSError as e:
+            raise VaultError(f"Could not read source for LLM summary: {e}") from e
+        cfg = _load_llm_config(args)
+        text = _llm_request(
+            cfg,
+            system=(
+                "You write concise, factual one-paragraph summaries of legal "
+                "templates for a librarian's index. Plain text. No marketing. "
+                "Mention category, party-side, and any unusual provisions."
+            ),
+            user=f"Template: {category}/{name}\n\nFirst 8000 chars:\n\n{content}",
+        )
+        meta["summary"] = text.strip()
+
+    # Validate before writing
+    errors = validate_meta(meta)
+    if errors:
+        raise VaultError("meta.json invalid after upload:\n  - " + "\n  - ".join(errors))
+
+    save_meta(t_dir, meta)
+
+    print(f"{'Created' if new else 'Updated'}: {category}/{name}@{vid}")
+    print(f"  file: {dest.relative_to(root)}")
+    print(f"  meta: {(t_dir / META_FILENAME).relative_to(root)}")
+    if not meta.get("summary"):
+        _eprint("note: summary is empty — `ask` recall will be weaker. "
+                "Re-upload with --summary or edit meta.json.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: list / find / get / info / diff
+# ---------------------------------------------------------------------------
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    rows: List[Tuple[str, str, str, List[str], List[str]]] = []
+    for cat, name, _path, meta in iter_templates(root):
+        if args.category and cat != args.category:
+            continue
+        if args.tag and args.tag not in (meta.get("tags") or []):
+            continue
+        if args.jurisdiction and args.jurisdiction not in (meta.get("jurisdiction") or []):
+            continue
+        rows.append(
+            (cat, name, meta.get("latest_version") or "?",
+             meta.get("tags") or [], meta.get("jurisdiction") or []),
+        )
+    if not rows:
+        print("(no templates match)")
+        return 0
+    width = max(len(f"{c}/{n}") for c, n, *_ in rows)
+    for cat, name, ver, tags, juris in rows:
+        ref = f"{cat}/{name}".ljust(width)
+        extra = []
+        if tags:
+            extra.append("tags=" + ",".join(tags))
+        if juris:
+            extra.append("juris=" + ",".join(juris))
+        print(f"{ref}  {ver}  " + "  ".join(extra))
+    return 0
+
+
+def cmd_find(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    q = args.query.lower()
+    hits: List[Tuple[float, str, str, str]] = []
+    for cat, name, _path, meta in iter_templates(root):
+        haystack_parts = [
+            cat, name,
+            meta.get("summary") or "",
+            " ".join(meta.get("tags") or []),
+            " ".join(meta.get("jurisdiction") or []),
+            " ".join(meta.get("deal_type") or []),
+            " ".join(meta.get("party_type") or []),
+        ]
+        haystack = " ".join(haystack_parts).lower()
+        if q in haystack:
+            score = 2.0
+        else:
+            score = difflib.SequenceMatcher(None, q, haystack).ratio()
+        if score >= 0.3:
+            hits.append((score, cat, name, meta.get("latest_version") or "?"))
+    hits.sort(reverse=True)
+    if not hits:
+        print(f"(no matches for {args.query!r})")
+        return 0
+    for score, cat, name, ver in hits[: args.top_k]:
+        print(f"{cat}/{name}@{ver}    score={score:.2f}")
+    return 0
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, version = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(f"No such template: {cat}/{name}")
+    meta = load_meta(t_dir)
+    f = resolve_version_file(t_dir, meta, version)
+    # Bump usage stats (best-effort; don't crash if read-only)
+    try:
+        meta["use_count"] = int(meta.get("use_count") or 0) + 1
+        meta["last_used"] = _today_iso()
+        save_meta(t_dir, meta)
+    except OSError:
+        pass
+    if args.path_only:
+        print(str(f))
+        return 0
+    sys.stdout.write(f.read_text())
+    return 0
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, _v = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(f"No such template: {cat}/{name}")
+    meta = load_meta(t_dir)
+    print(f"{cat}/{name}")
+    print(f"  latest:        {meta.get('latest_version')}")
+    print(f"  versions:      {len(meta.get('versions') or [])}")
+    print(f"  jurisdiction:  {', '.join(meta.get('jurisdiction') or []) or '-'}")
+    print(f"  party_type:    {', '.join(meta.get('party_type') or []) or '-'}")
+    print(f"  deal_type:     {', '.join(meta.get('deal_type') or []) or '-'}")
+    print(f"  tags:          {', '.join(meta.get('tags') or []) or '-'}")
+    print(f"  license:       {meta.get('license')}")
+    print(f"  source:        {meta.get('source') or '-'}")
+    print(f"  derived_from:  {meta.get('derived_from') or '-'}")
+    print(f"  used:          {meta.get('use_count')} (last: {meta.get('last_used') or '-'})")
+    print(f"  summary:       {meta.get('summary') or '(none)'}")
+    overrides = meta.get("clause_overrides") or []
+    if overrides:
+        print("  clause_overrides:")
+        for o in overrides:
+            print(f"    - {o.get('clause_title')!r} from {o.get('source_template')}@{o.get('source_version')}")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, _v = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    meta = load_meta(t_dir)
+    a = resolve_version_file(t_dir, meta, args.version_a).read_text().splitlines(keepends=True)
+    b = resolve_version_file(t_dir, meta, args.version_b).read_text().splitlines(keepends=True)
+    out = difflib.unified_diff(
+        a, b,
+        fromfile=f"{cat}/{name}@{args.version_a}",
+        tofile=f"{cat}/{name}@{args.version_b}",
+        n=3,
+    )
+    sys.stdout.writelines(out)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: clauses
+# ---------------------------------------------------------------------------
+
+
+def _load_template_text_and_clauses(root: Path, cat: str, name: str,
+                                    version: Optional[str] = None
+                                    ) -> Tuple[Path, str, List[Dict[str, Any]], Dict[str, Any]]:
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(f"No such template: {cat}/{name}")
+    meta = load_meta(t_dir)
+    f = resolve_version_file(t_dir, meta, version)
+    text = f.read_text()
+    explicit = meta.get("clauses")
+    clauses = detect_clauses(text, explicit_map=explicit if isinstance(explicit, list) else None)
+    return f, text, clauses, meta
+
+
+def cmd_clauses(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, version = parse_ref(args.ref)
+    _f, _text, clauses, meta = _load_template_text_and_clauses(root, cat, name, version)
+    if not clauses:
+        print(f"(no clauses detected in {cat}/{name}@{meta.get('latest_version')}) — "
+              "templates use H2 (`## Heading`) for clause boundaries, or supply "
+              "an explicit `clauses` map in meta.json.")
+        return 0
+    print(f"{cat}/{name}@{version or meta.get('latest_version')}  ({len(clauses)} clauses)")
+    for c in clauses:
+        print(f"  - {c['title']}    (anchor: {c['anchor']})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: compose
+# ---------------------------------------------------------------------------
+
+
+def cmd_compose(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    base_cat, base_name, base_version = parse_ref(args.base)
+    new_cat, new_name, _ = parse_ref(args.as_ref)
+    base_dir = template_dir(root, base_cat, base_name)
+    if not base_dir.exists():
+        raise NotFoundError(f"Base template not found: {base_cat}/{base_name}")
+    base_meta = load_meta(base_dir)
+    base_file = resolve_version_file(base_dir, base_meta, base_version)
+    base_vid = base_version or base_meta["latest_version"]
+    new_dir = template_dir(root, new_cat, new_name)
+    if new_dir.exists():
+        raise VaultError(f"Target already exists: {new_cat}/{new_name}")
+    new_dir.mkdir(parents=True)
+    new_file = new_dir / f"v1{base_file.suffix}"
+    new_file.write_bytes(base_file.read_bytes())
+    new_meta = {
+        "name": new_name,
+        "category": new_cat,
+        "latest_version": "v1",
+        "versions": [{
+            "id": "v1",
+            "added": _today_iso(),
+            "supersedes": None,
+            "changelog": f"forked from {base_cat}/{base_name}@{base_vid}",
+        }],
+    }
+    new_meta = fill_meta_defaults(new_meta)
+    new_meta["jurisdiction"] = list(base_meta.get("jurisdiction") or [])
+    new_meta["party_type"] = list(base_meta.get("party_type") or [])
+    new_meta["deal_type"] = list(base_meta.get("deal_type") or [])
+    new_meta["tags"] = list(base_meta.get("tags") or [])
+    new_meta["summary"] = (
+        f"Derived from {base_cat}/{base_name}@{base_vid}. "
+        + (base_meta.get("summary") or "")
+    ).strip()
+    new_meta["derived_from"] = f"{base_cat}/{base_name}@{base_vid}"
+    new_meta["forked_at_parent_version"] = base_vid
+    new_meta["clause_overrides"] = []
+    new_meta["license"] = base_meta.get("license", "private")
+    save_meta(new_dir, new_meta)
+    print(f"Composed: {new_cat}/{new_name}@v1  (forked from {base_cat}/{base_name}@{base_vid})")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: swap
+# ---------------------------------------------------------------------------
+
+
+def cmd_swap(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    target_cat, target_name, target_version = parse_ref(args.target)
+    src_cat, src_name, src_version = parse_ref(args.from_ref)
+    target_dir = template_dir(root, target_cat, target_name)
+    src_dir = template_dir(root, src_cat, src_name)
+    if not target_dir.exists():
+        raise NotFoundError(f"Target template not found: {target_cat}/{target_name}")
+    if not src_dir.exists():
+        raise NotFoundError(f"Source template not found: {src_cat}/{src_name}")
+
+    target_meta = load_meta(target_dir)
+    src_meta = load_meta(src_dir)
+    target_file = resolve_version_file(target_dir, target_meta, target_version)
+    src_file = resolve_version_file(src_dir, src_meta, src_version)
+    src_vid = src_version or src_meta["latest_version"]
+
+    target_text = target_file.read_text()
+    src_text = src_file.read_text()
+    target_clauses = detect_clauses(
+        target_text,
+        explicit_map=target_meta.get("clauses") if isinstance(target_meta.get("clauses"), list) else None,
+    )
+    src_clauses = detect_clauses(
+        src_text,
+        explicit_map=src_meta.get("clauses") if isinstance(src_meta.get("clauses"), list) else None,
+    )
+    src_clause = find_clause_by_title(src_clauses, args.clause)
+    if src_clause is None:
+        avail = ", ".join(c["title"] for c in src_clauses) or "(none detected)"
+        raise VaultError(
+            f"Clause {args.clause!r} not found in {src_cat}/{src_name}@{src_vid}. "
+            f"Available: {avail}"
+        )
+    target_clause = find_clause_by_title(target_clauses, args.clause)
+    if target_clause is None:
+        avail = ", ".join(c["title"] for c in target_clauses) or "(none detected)"
+        raise VaultError(
+            f"Clause {args.clause!r} not present in target {target_cat}/{target_name}. "
+            f"Available: {avail}"
+        )
+
+    src_body = slice_clause_text(src_text, src_clause)
+    # Preserve target's H2 header line so existing numbering stays intact.
+    src_body_after_header = src_body.split("\n", 1)[1] if "\n" in src_body else ""
+    replacement = target_clause["anchor"] + "\n" + src_body_after_header
+    new_text = replace_clause(target_text, target_clause, replacement)
+    target_file.write_text(new_text)
+
+    overrides = target_meta.get("clause_overrides") or []
+    overrides.append({
+        "clause_title": args.clause,
+        "source_template": f"{src_cat}/{src_name}",
+        "source_version": src_vid,
+        "swapped_at": _now_iso(),
+    })
+    target_meta["clause_overrides"] = overrides
+    save_meta(target_dir, target_meta)
+
+    print(f"Swapped clause {args.clause!r} in {target_cat}/{target_name} "
+          f"from {src_cat}/{src_name}@{src_vid}.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: compare-clauses
+# ---------------------------------------------------------------------------
+
+
+def cmd_compare_clauses(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    a_cat, a_name, a_v = parse_ref(args.a)
+    b_cat, b_name, b_v = parse_ref(args.b)
+    _af, a_text, a_clauses, a_meta = _load_template_text_and_clauses(root, a_cat, a_name, a_v)
+    _bf, b_text, b_clauses, b_meta = _load_template_text_and_clauses(root, b_cat, b_name, b_v)
+    a_label = f"{a_cat}/{a_name}@{a_v or a_meta.get('latest_version')}"
+    b_label = f"{b_cat}/{b_name}@{b_v or b_meta.get('latest_version')}"
+
+    if args.clause:
+        ac = find_clause_by_title(a_clauses, args.clause)
+        bc = find_clause_by_title(b_clauses, args.clause)
+        if not ac:
+            raise VaultError(
+                f"Clause {args.clause!r} not in {a_label}. "
+                f"Available: {', '.join(c['title'] for c in a_clauses) or '(none)'}"
+            )
+        if not bc:
+            raise VaultError(
+                f"Clause {args.clause!r} not in {b_label}. "
+                f"Available: {', '.join(c['title'] for c in b_clauses) or '(none)'}"
+            )
+        a_body = slice_clause_text(a_text, ac).splitlines(keepends=True)
+        b_body = slice_clause_text(b_text, bc).splitlines(keepends=True)
+        out = difflib.unified_diff(
+            a_body, b_body,
+            fromfile=f"{a_label}#{args.clause}",
+            tofile=f"{b_label}#{args.clause}",
+            n=3,
+        )
+        sys.stdout.writelines(out)
+        return 0
+
+    # Index by title (case-insensitive) for symmetric diff
+    a_titles = {c["title"].lower(): c for c in a_clauses}
+    b_titles = {c["title"].lower(): c for c in b_clauses}
+    common = sorted(set(a_titles) & set(b_titles))
+    only_a = sorted(set(a_titles) - set(b_titles))
+    only_b = sorted(set(b_titles) - set(a_titles))
+    print(f"# {a_label}  vs  {b_label}")
+    print()
+    print(f"## Common clauses ({len(common)})")
+    for t in common:
+        a_body = slice_clause_text(a_text, a_titles[t]).strip()
+        b_body = slice_clause_text(b_text, b_titles[t]).strip()
+        marker = "same" if a_body == b_body else "different"
+        print(f"  - {a_titles[t]['title']}  [{marker}]")
+    print()
+    print(f"## Only in {a_label} ({len(only_a)})")
+    for t in only_a:
+        print(f"  - {a_titles[t]['title']}")
+    print()
+    print(f"## Only in {b_label} ({len(only_b)})")
+    for t in only_b:
+        print(f"  - {b_titles[t]['title']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: upgrade
+# ---------------------------------------------------------------------------
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, _ = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(f"No such template: {cat}/{name}")
+    meta = load_meta(t_dir)
+    parent_ref = meta.get("derived_from")
+    parent_v_at_fork = meta.get("forked_at_parent_version")
+    if not parent_ref:
+        raise VaultError(
+            f"{cat}/{name} has no parent (derived_from is null). "
+            "Only composed/derived templates can be upgraded."
+        )
+    p_cat, p_name, _ = parse_ref(parent_ref)
+    p_dir = template_dir(root, p_cat, p_name)
+    if not p_dir.exists():
+        raise NotFoundError(f"Parent template not found in vault: {p_cat}/{p_name}")
+    p_meta = load_meta(p_dir)
+    parent_latest = p_meta["latest_version"]
+    if parent_latest == parent_v_at_fork:
+        print(f"Up to date. Parent {p_cat}/{p_name} is still at {parent_latest}.")
+        return 0
+    fork_file = resolve_version_file(p_dir, p_meta, parent_v_at_fork)
+    latest_file = resolve_version_file(p_dir, p_meta, parent_latest)
+    fork_text = fork_file.read_text()
+    latest_text = latest_file.read_text()
+    fork_clauses = detect_clauses(fork_text, explicit_map=p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None)
+    latest_clauses = detect_clauses(latest_text, explicit_map=p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None)
+
+    derived_file = resolve_version_file(t_dir, meta, meta["latest_version"])
+    derived_text = derived_file.read_text()
+    derived_clauses = detect_clauses(
+        derived_text,
+        explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+    )
+
+    # Build per-clause diff fork→latest
+    fork_idx = {c["title"].lower(): c for c in fork_clauses}
+    latest_idx = {c["title"].lower(): c for c in latest_clauses}
+    derived_idx = {c["title"].lower(): c for c in derived_clauses}
+
+    # Don't overwrite clauses the user explicitly swapped from another source.
+    overridden = {o["clause_title"].lower() for o in (meta.get("clause_overrides") or [])}
+
+    accepted = 0
+    skipped_overridden = 0
+    new_text = derived_text
+    # Re-detect each iteration since indices shift after replacement
+    for title_lc in sorted(set(fork_idx) & set(latest_idx)):
+        fb = slice_clause_text(fork_text, fork_idx[title_lc])
+        lb = slice_clause_text(latest_text, latest_idx[title_lc])
+        if fb == lb:
+            continue
+        if title_lc in overridden:
+            skipped_overridden += 1
+            print(f"  skipped (locally swapped): {fork_idx[title_lc]['title']}")
+            continue
+        if title_lc not in derived_idx:
+            print(f"  not present in derived: {fork_idx[title_lc]['title']}  (skipping)")
+            continue
+        # Show the diff
+        print(f"--- {fork_idx[title_lc]['title']} ---")
+        for line in difflib.unified_diff(
+            fb.splitlines(keepends=True),
+            lb.splitlines(keepends=True),
+            fromfile=f"parent@{parent_v_at_fork}",
+            tofile=f"parent@{parent_latest}",
+            n=2,
+        ):
+            sys.stdout.write(line)
+        if args.accept_all:
+            decision = "y"
+        else:
+            try:
+                decision = input("Accept this upstream change? [y/N] ").strip().lower()
+            except EOFError:
+                decision = "n"
+        if decision == "y":
+            # Re-detect derived clauses against current new_text
+            cur_clauses = detect_clauses(
+                new_text,
+                explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+            )
+            cur_target = find_clause_by_title(cur_clauses, fork_idx[title_lc]["title"])
+            if cur_target is None:
+                print("  (skipping; clause vanished mid-merge)")
+                continue
+            replacement_body = lb
+            # Preserve derived's existing header
+            replacement_body_after_header = (
+                replacement_body.split("\n", 1)[1] if "\n" in replacement_body else ""
+            )
+            replacement = cur_target["anchor"] + "\n" + replacement_body_after_header
+            new_text = replace_clause(new_text, cur_target, replacement)
+            accepted += 1
+
+    if accepted == 0 and skipped_overridden == 0:
+        print(f"No upstream changes to merge from {p_cat}/{p_name}@{parent_latest}.")
+        meta["forked_at_parent_version"] = parent_latest
+        save_meta(t_dir, meta)
+        return 0
+
+    # Write a new version
+    next_vid = auto_increment_version(meta)
+    new_file = t_dir / f"{next_vid}{derived_file.suffix}"
+    new_file.write_text(new_text)
+    meta["versions"].append({
+        "id": next_vid,
+        "added": _today_iso(),
+        "supersedes": meta["latest_version"],
+        "changelog": f"upgraded from parent {parent_v_at_fork} → {parent_latest} "
+                     f"({accepted} clauses accepted, {skipped_overridden} skipped due to local swap)",
+    })
+    for v in meta["versions"]:
+        if v.get("id") == meta["latest_version"]:
+            v["supersedes_by"] = next_vid
+    meta["latest_version"] = next_vid
+    meta["forked_at_parent_version"] = parent_latest
+    save_meta(t_dir, meta)
+    print(f"Wrote {cat}/{name}@{next_vid}: accepted={accepted}, skipped_overridden={skipped_overridden}.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: clause-library
+# ---------------------------------------------------------------------------
+
+
+def cmd_clause_library(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    threshold = args.threshold
+    by_title: Dict[str, List[Tuple[str, str, str, str]]] = {}
+    for cat, name, _path, meta in iter_templates(root):
+        try:
+            f = resolve_version_file(template_dir(root, cat, name), meta, None)
+            text = f.read_text()
+        except (VaultError, OSError):
+            continue
+        clauses = detect_clauses(
+            text,
+            explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+        )
+        for c in clauses:
+            body = slice_clause_text(text, c)
+            by_title.setdefault(c["title"].lower(), []).append(
+                (f"{cat}/{name}", meta.get("latest_version") or "?", c["title"], body)
+            )
+
+    clusters: List[Tuple[str, List[Tuple[str, str]], float]] = []
+    for title_lc, occurrences in by_title.items():
+        if len(occurrences) < 2:
+            continue
+        # Pairwise similarity. Group greedily: an occurrence joins the cluster
+        # if its body is similar (>= threshold) to the cluster's reference.
+        used = [False] * len(occurrences)
+        for i, ref in enumerate(occurrences):
+            if used[i]:
+                continue
+            cluster = [(ref[0], ref[1])]
+            ratios = [1.0]
+            used[i] = True
+            for j, other in enumerate(occurrences[i + 1:], start=i + 1):
+                if used[j]:
+                    continue
+                r = difflib.SequenceMatcher(None, ref[3], other[3]).ratio()
+                if r >= threshold:
+                    cluster.append((other[0], other[1]))
+                    ratios.append(r)
+                    used[j] = True
+            if len(cluster) >= 2:
+                clusters.append((ref[2], cluster, sum(ratios) / len(ratios)))
+
+    clusters.sort(key=lambda t: (-len(t[1]), -t[2], t[0]))
+    if not clusters:
+        print(f"(no clusters above threshold {threshold:.2f})")
+        return 0
+    for title, members, mean_r in clusters:
+        print(f"- {title}  (n={len(members)}, mean_similarity={mean_r:.2f})")
+        for ref, ver in members:
+            print(f"    · {ref}@{ver}")
+    if args.extract:
+        # Best-effort interactive extraction prompt.
+        try:
+            ans = input("\nExtract any of these to clauses/<category>/<slug>.md? [y/N] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans == "y":
+            print("Note: extraction is interactive and writes only when confirmed per cluster.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: ask
+# ---------------------------------------------------------------------------
+
+
+_ASK_SYSTEM = (
+    "You are an assistant helping a user select or compose the best-fit legal "
+    "template from their organization's library. You will be given a list of "
+    "templates with metadata and clause titles, plus a user query. Recommend "
+    "the top match and 1-2 alternatives, with brief reasoning that references "
+    "each template's metadata. If the query asks for composition, emit a "
+    "sequence of `compose` and `swap` commands using only template names and "
+    "clause titles that appear in the listing. Do NOT invent templates or "
+    "clauses that aren't in the list. Reply in plain text, not JSON."
+)
+
+
+def _ask_build_listing(root: Path, top_k: int, with_content: bool,
+                       query: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Build the listing string sent to the LLM and return the candidate set."""
+    candidates: List[Tuple[float, str, str, Dict[str, Any], Path]] = []
+    q = query.lower()
+    for cat, name, path, meta in iter_templates(root):
+        haystack = " ".join([
+            cat, name,
+            meta.get("summary") or "",
+            " ".join(meta.get("tags") or []),
+            " ".join(meta.get("jurisdiction") or []),
+            " ".join(meta.get("deal_type") or []),
+        ]).lower()
+        score = 2.0 if q in haystack else difflib.SequenceMatcher(None, q, haystack).ratio()
+        candidates.append((score, cat, name, meta, path))
+    candidates.sort(reverse=True, key=lambda t: t[0])
+    chosen = candidates[:top_k]
+    parts: List[str] = []
+    for score, cat, name, meta, path in chosen:
+        try:
+            f = resolve_version_file(path, meta, None)
+            text = f.read_text()
+            clauses = detect_clauses(
+                text,
+                explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+            )
+        except (VaultError, OSError):
+            text, clauses = "", []
+        parts.append(f"### {cat}/{name}@{meta.get('latest_version')}")
+        parts.append(f"summary: {meta.get('summary') or '(none)'}")
+        parts.append(f"jurisdiction: {', '.join(meta.get('jurisdiction') or []) or '-'}")
+        parts.append(f"tags: {', '.join(meta.get('tags') or []) or '-'}")
+        parts.append(f"clauses: {', '.join(c['title'] for c in clauses) or '(none)'}")
+        if with_content and text:
+            excerpt = text[:500].replace("\n", " ")
+            parts.append(f"excerpt(500): {excerpt}")
+        parts.append("")
+    listing = "\n".join(parts)
+    return listing, [(cat, name) for _s, cat, name, _m, _p in chosen]
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    no_confirm = os.environ.get(NO_CONFIRM_ENV) == "1"
+    if args.with_content:
+        if not (interactive or no_confirm or args.yes_send):
+            raise VaultError(
+                "--with-content sends template excerpts to the LLM provider. "
+                "Refusing in non-interactive mode without explicit consent. "
+                f"Pass --yes-send or set {NO_CONFIRM_ENV}=1 to confirm."
+            )
+        if interactive and not no_confirm and not args.yes_send:
+            cfg_preview = _load_llm_config(args)
+            provider = cfg_preview.get("provider", "anthropic")
+            model = cfg_preview.get("model") or "(default)"
+            base = cfg_preview.get("base_url") or "(default)"
+            _eprint(
+                f"\nWARNING: --with-content will send template excerpts to:\n"
+                f"  provider: {provider}\n  model:    {model}\n  base_url: {base}\n"
+                f"Only metadata is sent without --with-content.\n"
+            )
+            try:
+                ans = input("Proceed? [y/N] ").strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans != "y":
+                _eprint("aborted")
+                return 1
+
+    listing, _candidates = _ask_build_listing(root, args.top_k, args.with_content, args.query)
+    user_msg = f"Templates:\n\n{listing}\n\nUser query: {args.query}"
+    cfg = _load_llm_config(args)
+    text = _llm_request(cfg, system=_ASK_SYSTEM, user=user_msg)
+    print(text.strip())
+    if args.json:
+        # Also emit a structured summary on stdout (callers can parse separately)
+        json.dump(
+            {"query": args.query, "with_content": args.with_content,
+             "candidates": [{"category": c, "name": n} for c, n in _candidates],
+             "answer": text.strip()},
+            sys.stdout, indent=2,
+        )
+        sys.stdout.write("\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: import / sources
+# ---------------------------------------------------------------------------
+
+
+def cmd_sources(_args: argparse.Namespace) -> int:
+    reg = load_sources_registry()
+    print(f"Bundled sources (schema_version={reg.get('schema_version')}):")
+    for src in reg.get("sources", []):
+        print(f"  {src['id']}")
+        print(f"    category: {src.get('category')}")
+        print(f"    license:  {src.get('license')}")
+        print(f"    url:      {src.get('url')}")
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    reg = load_sources_registry()
+    matches = [s for s in reg.get("sources", []) if s.get("id") == args.source_id]
+    if not matches:
+        ids = ", ".join(s["id"] for s in reg.get("sources", []))
+        raise VaultError(f"Unknown source: {args.source_id!r}. Available: {ids}")
+    src = matches[0]
+    url = src["url"]
+    expected_hash = src.get("sha256")
+    print(f"Fetching {url} ...", file=sys.stderr)
+    try:
+        body = _fetch_url(url)
+    except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        raise VaultError(f"Could not fetch {url}: {e}") from e
+    actual_hash = sha256_bytes(body)
+    if expected_hash and not args.no_verify:
+        if expected_hash != actual_hash:
+            raise VaultError(
+                f"Hash mismatch for {args.source_id}: expected {expected_hash}, got {actual_hash}. "
+                "Refuse import. Re-pin with --pin-hash if you trust the new content."
+            )
+    elif args.pin_hash:
+        # Persist into a writable copy in the vault config
+        cfg = read_vault_config(root)
+        pinned = cfg.setdefault("pinned_source_hashes", {})
+        pinned[args.source_id] = actual_hash
+        write_vault_config(root, cfg)
+        print(f"Pinned hash for {args.source_id}: {actual_hash}", file=sys.stderr)
+    elif not expected_hash:
+        print(f"Note: no sha256 in registry for {args.source_id}; observed {actual_hash}. "
+              "Use --pin-hash to record it for future verification.", file=sys.stderr)
+
+    # Determine extension by content-type heuristic; default to .md
+    ext = ".md"
+    if body.lstrip().startswith(b"%PDF"):
+        ext = ".pdf"
+    elif b"<html" in body[:512].lower():
+        ext = ".html"
+
+    cat = src["category"]
+    name = src["name"]
+    t_dir = template_dir(root, cat, name)
+    new = not t_dir.exists()
+    t_dir.mkdir(parents=True, exist_ok=True)
+    meta = load_meta(t_dir) if (t_dir / META_FILENAME).exists() else {
+        "name": name,
+        "category": cat,
+        "latest_version": None,
+        "versions": [],
+    }
+    meta = fill_meta_defaults(meta)
+    vid = auto_increment_version(meta)
+    dest = t_dir / f"{vid}{ext}"
+    dest.write_bytes(body)
+    meta["versions"].append({
+        "id": vid,
+        "added": _today_iso(),
+        "supersedes": meta.get("latest_version"),
+        "changelog": f"imported from {args.source_id}",
+        "sha256": actual_hash,
+    })
+    if meta.get("latest_version"):
+        for v in meta["versions"]:
+            if v.get("id") == meta["latest_version"]:
+                v["supersedes_by"] = vid
+    meta["latest_version"] = vid
+    meta["source"] = url
+    if not meta.get("summary"):
+        meta["summary"] = src.get("summary") or ""
+    meta["license"] = src.get("license") or meta.get("license")
+    if src.get("attribution"):
+        meta["attribution"] = src["attribution"]
+    incoming_tags = set(src.get("tags") or [])
+    meta["tags"] = sorted(set(meta.get("tags") or []) | incoming_tags)
+    save_meta(t_dir, meta)
+    print(f"{'Imported' if new else 'Updated'}: {cat}/{name}@{vid}  (license: {src.get('license')})")
+    if src.get("attribution"):
+        print(f"  attribution required: {src['attribution']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command: sync / publish
+# ---------------------------------------------------------------------------
+
+
+def cmd_sync(_args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    try:
+        r = _git(["pull"], root, check=False)
+        sys.stdout.write(r.stdout)
+        if r.stderr:
+            sys.stderr.write(r.stderr)
+        return r.returncode
+    except FileNotFoundError as e:
+        raise VaultError("git not found in PATH") from e
+
+
+def cmd_publish(_args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    try:
+        r = _git(["push"], root, check=False)
+        sys.stdout.write(r.stdout)
+        if r.stderr:
+            sys.stderr.write(r.stderr)
+        return r.returncode
+    except FileNotFoundError as e:
+        raise VaultError("git not found in PATH") from e
+
+
+# ---------------------------------------------------------------------------
+# Command: doctor
+# ---------------------------------------------------------------------------
+
+
+def cmd_doctor(_args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cfg = read_vault_config(root)
+    issues: List[str] = []
+    issues.extend(validate_vault_config(cfg))
+    seen_categories: List[str] = []
+    seen_templates = 0
+    for cat_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        if cat_dir.name in {"config", "tests", ".git", ".github"}:
+            continue
+        seen_categories.append(cat_dir.name)
+        if cat_dir.name not in KNOWN_CATEGORIES:
+            issues.append(f"unrecognized category: {cat_dir.name} (allowed but unusual)")
+        for t_dir in sorted(p for p in cat_dir.iterdir() if p.is_dir()):
+            seen_templates += 1
+            mp = t_dir / META_FILENAME
+            if not mp.exists():
+                issues.append(f"missing meta.json: {cat_dir.name}/{t_dir.name}")
+                continue
+            try:
+                meta = load_meta(t_dir)
+            except VaultError as e:
+                issues.append(f"meta.json error in {cat_dir.name}/{t_dir.name}: {e}")
+                continue
+            errs = validate_meta(meta)
+            for e in errs:
+                issues.append(f"{cat_dir.name}/{t_dir.name}: {e}")
+            # Latest pointer must point at a real file
+            try:
+                resolve_version_file(t_dir, meta, None)
+            except VaultError as e:
+                issues.append(f"{cat_dir.name}/{t_dir.name}: latest_version unreachable ({e})")
+            # Version-numbering gaps (vN sequence)
+            ids = [v.get("id") for v in meta.get("versions") or []]
+            if all(isinstance(i, str) and re.fullmatch(r"v\d+", i) for i in ids):
+                nums = sorted(int(i[1:]) for i in ids)
+                if nums and nums != list(range(1, max(nums) + 1)):
+                    issues.append(
+                        f"{cat_dir.name}/{t_dir.name}: version numbering has gaps: {ids}"
+                    )
+            # Explicit clauses map: anchors should resolve
+            explicit = meta.get("clauses")
+            if isinstance(explicit, list) and explicit:
+                try:
+                    f = resolve_version_file(t_dir, meta, None)
+                    text = f.read_text()
+                    for entry in explicit:
+                        if entry.get("anchor") and entry["anchor"] not in text:
+                            issues.append(
+                                f"{cat_dir.name}/{t_dir.name}: explicit clause anchor not found: "
+                                f"{entry.get('anchor')!r}"
+                            )
+                except (VaultError, OSError):
+                    pass
+
+    print(f"Vault root:    {root}")
+    print(f"Categories:    {len(seen_categories)} ({', '.join(seen_categories) or '-'})")
+    print(f"Templates:     {seen_templates}")
+    if not issues:
+        print("Status:        OK")
+        return 0
+    print(f"Status:        {len(issues)} issue(s)")
+    for i in issues:
+        print(f"  - {i}")
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Argparse
+# ---------------------------------------------------------------------------
+
+
+def _add_llm_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--llm", help="LLM provider override (anthropic|openai)")
+    p.add_argument("--llm-model", help="LLM model override")
+    p.add_argument("--llm-base-url", help="LLM base URL override (for OpenAI-compatible endpoints)")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="template-vault",
+        description="Git-backed, clause-aware legal-document template manager.",
+    )
+    p.add_argument("--version", action="version", version=f"template-vault {__version__}")
+    sub = p.add_subparsers(dest="cmd")
+
+    p_init = sub.add_parser("init", help="Initialize a vault in the current dir")
+    p_init.add_argument("--bare", action="store_true", help="git init --bare")
+    p_init.add_argument("--path", help="Target path (default: cwd)")
+    p_init.set_defaults(func=cmd_init)
+
+    p_up = sub.add_parser("upload", help="Add a template version to the vault")
+    p_up.add_argument("file")
+    p_up.add_argument("--category", required=True)
+    p_up.add_argument("--name", required=True)
+    p_up.add_argument("--version", help="Explicit version id (default: auto v1, v2, ...)")
+    p_up.add_argument("--supersedes", help="Prior version id this one replaces")
+    p_up.add_argument("--summary")
+    p_up.add_argument("--changelog")
+    p_up.add_argument("--tags", help="Comma-separated tag list")
+    p_up.add_argument("--jurisdiction", help="Comma-separated jurisdictions")
+    p_up.add_argument("--party-type")
+    p_up.add_argument("--deal-type")
+    p_up.add_argument("--license")
+    p_up.add_argument("--owner")
+    p_up.add_argument("--uploaded-by")
+    p_up.add_argument("--source")
+    p_up.add_argument("--llm-summarize", action="store_true",
+                      help="Opt-in: ask the LLM for a one-paragraph summary")
+    p_up.add_argument("--non-interactive", action="store_true",
+                      help="Suppress interactive prompts; fail if required fields missing")
+    _add_llm_flags(p_up)
+    p_up.set_defaults(func=cmd_upload)
+
+    p_list = sub.add_parser("list", help="List templates")
+    p_list.add_argument("--category")
+    p_list.add_argument("--tag")
+    p_list.add_argument("--jurisdiction")
+    p_list.set_defaults(func=cmd_list)
+
+    p_find = sub.add_parser("find", help="Keyword search across metadata")
+    p_find.add_argument("query")
+    p_find.add_argument("--top-k", type=int, default=10)
+    p_find.set_defaults(func=cmd_find)
+
+    p_get = sub.add_parser("get", help="Print a template (or its path with --path-only)")
+    p_get.add_argument("ref", help="category/name[@version]")
+    p_get.add_argument("--path-only", action="store_true")
+    p_get.set_defaults(func=cmd_get)
+
+    p_info = sub.add_parser("info", help="Show metadata for a template")
+    p_info.add_argument("ref")
+    p_info.set_defaults(func=cmd_info)
+
+    p_diff = sub.add_parser("diff", help="Unified diff between two versions of one template")
+    p_diff.add_argument("ref")
+    p_diff.add_argument("version_a")
+    p_diff.add_argument("version_b")
+    p_diff.set_defaults(func=cmd_diff)
+
+    p_clauses = sub.add_parser("clauses", help="List clauses detected in a template")
+    p_clauses.add_argument("ref")
+    p_clauses.set_defaults(func=cmd_clauses)
+
+    p_compose = sub.add_parser("compose", help="Fork a template into a new derived one")
+    p_compose.add_argument("--base", required=True, help="category/name[@version]")
+    p_compose.add_argument("--as", dest="as_ref", required=True,
+                           help="category/new-name for the derived template")
+    p_compose.set_defaults(func=cmd_compose)
+
+    p_swap = sub.add_parser("swap", help="Replace one clause from another template")
+    p_swap.add_argument("target", help="category/name (the template to mutate)")
+    p_swap.add_argument("--clause", required=True, help="Clause title (case-insensitive)")
+    p_swap.add_argument("--from", dest="from_ref", required=True,
+                        help="category/name[@version] (source of the clause)")
+    p_swap.set_defaults(func=cmd_swap)
+
+    p_cmp = sub.add_parser("compare-clauses", help="Compare clauses between two templates")
+    p_cmp.add_argument("a")
+    p_cmp.add_argument("b")
+    p_cmp.add_argument("--clause", help="If set, diff only this clause")
+    p_cmp.set_defaults(func=cmd_compare_clauses)
+
+    p_up2 = sub.add_parser("upgrade", help="Pull parent-template changes into a derived template")
+    p_up2.add_argument("ref")
+    p_up2.add_argument("--accept-all", action="store_true")
+    p_up2.set_defaults(func=cmd_upgrade)
+
+    p_lib = sub.add_parser("clause-library", help="Find repeated clauses across the vault")
+    p_lib.add_argument("--threshold", type=float, default=0.85)
+    p_lib.add_argument("--extract", action="store_true",
+                       help="Prompt to extract clusters into clauses/<category>/<slug>.md")
+    p_lib.set_defaults(func=cmd_clause_library)
+
+    p_ask = sub.add_parser("ask", help="LLM-conversational template recommendation")
+    p_ask.add_argument("query")
+    p_ask.add_argument("--with-content", action="store_true",
+                       help="Opt-in: include short template excerpts in the prompt")
+    p_ask.add_argument("--top-k", type=int, default=5)
+    p_ask.add_argument("--yes-send", action="store_true",
+                       help="Skip the --with-content confirmation prompt")
+    p_ask.add_argument("--json", action="store_true",
+                       help="Also print a JSON blob of {query, candidates, answer}")
+    _add_llm_flags(p_ask)
+    p_ask.set_defaults(func=cmd_ask)
+
+    p_imp = sub.add_parser("import", help="Import a template from a configured public source")
+    p_imp.add_argument("source_id")
+    p_imp.add_argument("--no-verify", action="store_true",
+                       help="Skip hash verification (not recommended)")
+    p_imp.add_argument("--pin-hash", action="store_true",
+                       help="Record the observed hash in vault config for next run")
+    p_imp.set_defaults(func=cmd_import)
+
+    p_src = sub.add_parser("sources", help="List bundled public-source registry entries")
+    p_src.set_defaults(func=cmd_sources)
+
+    p_sync = sub.add_parser("sync", help="git pull (thin wrapper)")
+    p_sync.set_defaults(func=cmd_sync)
+    p_pub = sub.add_parser("publish", help="git push (thin wrapper)")
+    p_pub.set_defaults(func=cmd_publish)
+
+    p_doc = sub.add_parser("doctor", help="Vault integrity check")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+_FIRST_RUN_HINT = (
+    "template-vault — Git-backed, clause-aware legal-template manager.\n"
+    "\n"
+    "First-run hints:\n"
+    "  template-vault init                         create a vault in the current dir\n"
+    "  template-vault sources                      list bundled public-source IDs\n"
+    "  template-vault import common-paper-mutual-nda     pull in your first template\n"
+    "  template-vault upload my.md --category nda --name house-mutual\n"
+    "\n"
+    "See `template-vault --help` for all commands.\n"
+)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:
+        sys.stdout.write(_FIRST_RUN_HINT)
+        return 0
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        sys.stdout.write(_FIRST_RUN_HINT)
+        return 0
+    try:
+        return args.func(args) or 0
+    except VaultError as e:
+        _eprint(f"error: {e}")
+        return 2
+    except KeyboardInterrupt:
+        _eprint("interrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
