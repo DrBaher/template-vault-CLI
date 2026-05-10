@@ -116,10 +116,37 @@ deliberately stays out of that layer.
 
 ## Can I run my own public-source registry?
 
-Right now the registry is bundled in `config/default-sources.json`. If you
-want a private registry pointing at internal sources, fork the CLI and edit
-that file — it's small. A v0.2 will likely add a registry-override mechanism
-(e.g. `--sources path/to/sources.json`), tracked in CHANGELOG.
+Yes. Two ways:
+
+```bash
+# CLI flag, applies to one invocation
+template-vault sources --sources ~/internal-sources.json
+template-vault import internal-vendor-nda --sources ~/internal-sources.json
+
+# Env var, applies to every invocation in the shell
+export NDA_VAULT_SOURCES=~/internal-sources.json
+template-vault sources                       # uses your registry
+```
+
+The registry file follows the same shape as `config/default-sources.json`.
+The CLI flag wins over the env var, which wins over the bundled default.
+
+## Does `ask` actually run the commands it suggests?
+
+Only with `--execute`, and only `compose` / `swap`. Everything else
+(`upload`, `import`, `publish`, …) is skipped with a notice — those have
+side effects we don't want a hallucinated LLM line touching.
+
+```bash
+template-vault ask "compose a startup-friendly NDA from yc and house" --execute
+# Shows the parsed commands, asks Run these? [y/N], runs each in-process,
+# stops the chain on the first failure.
+```
+
+In non-interactive contexts you must pass `--yes-execute` to skip the
+confirmation. The chain is still order-preserving and stops on the first
+non-zero exit, so a hallucinated clause name fails fast and the rest of the
+chain doesn't run.
 
 ## Why stdlib-only?
 
