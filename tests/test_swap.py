@@ -125,5 +125,24 @@ class SwapTests(CliCase):
         self.assertIn("one year from the Effective Date", after)
 
 
+class InfoJsonTests(CliCase):
+    def test_info_json_emits_clauses_and_metadata(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL,
+                         jurisdiction=["California"], tags=["mutual"],
+                         summary="house mutual NDA")
+            code, out, _err = run_cli("info", "nda/x", "--json")
+            self.assertEqual(code, 0)
+            doc = json.loads(out)
+            self.assertEqual(doc["ref"], "nda/x")
+            self.assertEqual(doc["latest_version"], "v1")
+            self.assertEqual(doc["jurisdiction"], ["California"])
+            self.assertEqual(doc["tags"], ["mutual"])
+            self.assertEqual(doc["summary"], "house mutual NDA")
+            titles = [c["title"] for c in doc["clauses"]]
+            self.assertIn("Term and Survival", titles)
+            self.assertIn("Residual Knowledge", titles)
+
+
 if __name__ == "__main__":
     unittest.main()

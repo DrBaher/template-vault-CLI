@@ -181,5 +181,42 @@ class ClauseLibraryAliasClusterTests(CliCase):
             self.assertNotIn("n=2", out)
 
 
+class ClauseLibrarySuggestAliasesTests(CliCase):
+    """Suggester surfaces clause pairs that have similar bodies but
+    different titles AND aren't already aliased."""
+
+    def test_suggests_pair_with_different_titles_and_similar_body(self):
+        with temp_vault() as v:
+            shared = (
+                "This agreement remains in effect for the period of "
+                "evaluation. Confidentiality obligations survive termination."
+            )
+            add_template(v, "nda", "a", f"# A\n\n## 1. Term and Survival\n{shared}\n")
+            add_template(v, "nda", "b", f"# B\n\n## 1. Termination\n{shared}\n")
+            code, out, _err = run_cli(
+                "clause-library", "--threshold", "0.85", "--suggest-aliases",
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("Alias suggestions", out)
+            self.assertIn("Term and Survival", out)
+            self.assertIn("Termination", out)
+
+    def test_does_not_suggest_when_already_aliased(self):
+        with temp_vault() as v:
+            shared = "Identical body text across both templates."
+            add_template(v, "nda", "a", f"## 1. Term and Survival\n{shared}\n")
+            add_template(v, "nda", "b", f"## 1. Termination\n{shared}\n")
+            # Declare the alias on a; the suggester should NOT re-suggest.
+            mp = v / "nda" / "a" / "meta.json"
+            meta = json.loads(mp.read_text())
+            meta["clause_aliases"] = {"Term and Survival": ["Termination"]}
+            mp.write_text(json.dumps(meta, indent=2) + "\n")
+            code, out, _err = run_cli(
+                "clause-library", "--threshold", "0.85", "--suggest-aliases",
+            )
+            self.assertEqual(code, 0)
+            self.assertIn("no alias suggestions", out.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
