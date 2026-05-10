@@ -1,0 +1,23 @@
+{
+  "name": "example-mutual",
+  "category": "nda",
+  "latest_version": "v1",
+  "versions": [
+    {"id": "v1", "added": "2026-05-10", "supersedes": null, "changelog": "fixture"}
+  ],
+  "jurisdiction": ["California"],
+  "party_type": ["mutual"],
+  "deal_type": [],
+  "tags": ["fixture", "mutual"],
+  "owner": null,
+  "license": "private",
+  "source": null,
+  "uploaded_by": null,
+  "use_count": 0,
+  "last_used": null,
+  "summary": "Test fixture mutual NDA. California, mutual.",
+  "derived_from": null,
+  "forked_at_parent_version": null,
+  "clauses": null,
+  "clause_overrides": []
+}
