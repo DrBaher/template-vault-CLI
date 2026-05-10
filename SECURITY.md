@@ -58,6 +58,24 @@ The CLI prints what it's about to send (the provider/model identity), but does
 **not** log the listing or excerpt contents themselves. Privacy tooling
 should not log the things it's protecting.
 
+## `ask --execute` posture
+
+`--execute` parses the LLM response for lines beginning with
+`template-vault `, splits them with `shlex`, and runs the ones whose
+subcommand is in a hard-coded whitelist: **`compose` and `swap` only**.
+Everything else is skipped with a notice — including `upload`, `import`,
+`publish`, `sync`, and `ask` itself. This bounds the blast radius of an
+LLM hallucination to in-vault structural moves; it cannot upload new
+content, push to remotes, or import from URLs.
+
+The chain stops on the first non-zero exit. If the LLM hallucinates a
+clause that doesn't exist in the named source, `swap` fails fast with the
+list of available clauses (deterministic CLI behavior, not LLM-side
+validation), the chain stops, and nothing further runs.
+
+In non-interactive contexts `--execute` requires `--yes-execute` — same
+posture as `--with-content`.
+
 ## Source-import verification
 
 The bundled registry (`config/default-sources.json`) ships with `sha256: null`
