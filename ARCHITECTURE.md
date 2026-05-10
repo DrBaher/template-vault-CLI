@@ -5,6 +5,35 @@
 The vault is a **plain Git repository**. There is no database, no daemon, no
 SaaS. Multi-user sync is whatever Git remote you already use.
 
+### Vault config (`.vault.json`)
+
+```json
+{
+  "schema_version": 1,
+  "created": "2026-05-10",
+  "sources": [],
+  "template_defaults": {
+    "license": "internal-only",
+    "owner": "legal-team",
+    "jurisdiction": ["California"]
+  },
+  "clause_aliases": {
+    "Term and Survival": ["Termination", "Duration"]
+  }
+}
+```
+
+`template_defaults` is a partial `meta.json`: any field absent or empty in
+a per-template meta gets filled from this map at read time via
+`load_meta_resolved`. Per-template values always win on key collision. The
+overlay is **never** persisted back into the per-template files — mutating
+commands round-trip through raw `load_meta` / `save_meta`.
+
+`clause_aliases` is a vault-wide alias map; per-template `clause_aliases`
+are unioned with vault-level entries for the same canonical title.
+
+
+
 ```
 your-vault/
 ├── .vault.json         ← vault config: schema version, defaults, optional pinned hashes
@@ -85,6 +114,28 @@ clauses — they belong to the body of their parent H2. This convention matches
 Common Paper, YC SAFE, Bonterms, and most professional templates.
 
 A clause's body runs from its `^## ` line to the next `^## ` line (or EOF).
+
+### Fallback detection (non-Markdown templates)
+
+If H2 detection returns **zero** clauses, a fallback pass runs. It tries
+two patterns, accepting the first that produces ≥ 2 matches:
+
+1. **Bold-numbered headings** like `**1. Purpose**`, `**Section 4. Term**`,
+   `**(1) Notices**`. The numbering token is required — bare bold lines
+   without a number/word-prefix marker are ignored to avoid snagging inline
+   emphasis.
+2. **ALL-CAPS standalone lines** of ≥ 4 characters, surrounded by blank
+   lines: `CONFIDENTIALITY OBLIGATIONS`. Inline shouts inside a paragraph
+   are not matched (the surrounding-blank-lines requirement filters those).
+
+The fallback is intentionally conservative. False negatives (zero clauses)
+are recoverable via the explicit `clauses` map; false positives (a clause
+inside a body) corrupt swap/upgrade silently. The fallback never runs when
+H2 detection has produced any clauses.
+
+This is what makes `.docx` → Markdown templates work after `upload`'s
+heading-style conversion: the converter emits `## Heading 2` style for
+non-`Heading 1` paragraphs, and H2 detection takes over.
 
 ### Title normalization
 

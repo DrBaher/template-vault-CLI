@@ -107,10 +107,11 @@ template-vault upload <file>
     [--version v3] [--supersedes v2] [--summary "..."]
     [--tags a,b] [--jurisdiction "California,Delaware"]
     [--license MIT] [--llm-summarize]
+    [--amend v3 [--yes-amend]]                      # overwrite a version in place
 template-vault list   [--category nda] [--tag house-style] [--jurisdiction California]
 template-vault find   "<keyword>"
 template-vault get    <category>/<name>[@version] [--path-only]
-template-vault info   <category>/<name>
+template-vault info   <category>/<name> [--json]    # --json for scripts
 template-vault diff   <category>/<name> <version-a> <version-b>
 
 # Clause-aware composition
@@ -118,8 +119,8 @@ template-vault clauses          <category>/<name>
 template-vault compose          --base <ref> --as <category>/<new-name>
 template-vault swap             <target> --clause "<title>" --from <ref>
 template-vault compare-clauses  <a> <b> [--clause "<title>"]
-template-vault upgrade          <ref> [--accept-all] [--dry-run]
-template-vault clause-library   [--threshold 0.85] [--extract]
+template-vault upgrade          <ref> [--accept-all] [--dry-run] [--interactive-explain]
+template-vault clause-library   [--threshold 0.85] [--extract] [--suggest-aliases]
 
 # LLM (opt-in, metadata-only by default)
 template-vault ask "<query>" [--with-content] [--top-k 5] [--llm anthropic]
@@ -184,12 +185,15 @@ will resolve via `template-vault get` if a vault is configured.
 ## Install
 
 ```bash
-pipx install template-vault-cli       # recommended
+pipx install template-vault-cli                 # recommended
 # or
-pip install template-vault-cli
+pip install template-vault-cli                  # stdlib-only
+pip install 'template-vault-cli[docx]'          # +.docx ingestion (python-docx)
 ```
 
-Requires Python 3.9+. **No third-party runtime dependencies** — stdlib only.
+Requires Python 3.9+. **No third-party runtime dependencies** in the default
+install — `[docx]` adds `python-docx` only when you want to upload `.docx`
+files.
 
 ## License
 
