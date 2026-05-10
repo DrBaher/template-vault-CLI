@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to llm.json (gitignored) and edit. Or set NDA_VAULT_LLM_PROVIDER / NDA_VAULT_LLM_API_KEY / NDA_VAULT_LLM_MODEL / NDA_VAULT_LLM_BASE_URL env vars. CLI flags --llm / --llm-model / --llm-base-url override either.",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "api_key": "sk-ant-...",
+  "base_url": null,
+  "_alternates": {
+    "openai": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "api_key": "sk-...",
+      "base_url": "https://api.openai.com/v1"
+    },
+    "ollama": {
+      "provider": "openai",
+      "model": "llama3.1",
+      "api_key": "ollama",
+      "base_url": "http://localhost:11434/v1"
+    }
+  }
+}
