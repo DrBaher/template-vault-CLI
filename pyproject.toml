@@ -39,6 +39,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["coverage>=7.0"]
+docx = ["python-docx>=1.0"]
 
 [tool.coverage.run]
 source = ["template_vault_cli"]

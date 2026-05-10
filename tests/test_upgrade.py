@@ -113,5 +113,51 @@ class UpgradeTests(CliCase):
         self.assertEqual((derived / "meta.json").read_text(), meta_before)
 
 
+class UpgradeInteractiveExplainTests(CliCase):
+    def setUp(self):
+        self._cm = temp_vault()
+        self.vault = self._cm.__enter__()
+        from tests._helpers import (add_template as _add,
+                                    SAMPLE_NDA_MUTUAL as _M)
+        _add(self.vault, "nda", "house-mutual", _M)
+        run_cli("compose",
+                "--base", "nda/house-mutual",
+                "--as", "nda/house-mutual-startup")
+        _add_v2_to_parent(self.vault, "nda", "house-mutual", PARENT_V2_BODY)
+
+    def tearDown(self):
+        self._cm.__exit__(None, None, None)
+
+    def test_question_mark_calls_llm_with_diff_and_reprompts(self):
+        import io as _io
+        import os as _os
+        from unittest import mock as _mock
+        captured = {}
+
+        def fake_llm(cfg, system, user, timeout=60):
+            captured["system"] = system
+            captured["user"] = user
+            return "This change extends the survival period from two to three years, lengthening confidentiality obligations."
+
+        # Feed: "?" first (triggers explain), then "y" (accept).
+        # Then "y" again for any subsequent clause changes.
+        responses = iter(["?", "y", "y", "y", "y"])
+        with _mock.patch.dict(_os.environ, {"NDA_VAULT_LLM_API_KEY": "k"}), \
+             _mock.patch.object(tvc, "_llm_request", fake_llm), \
+             _mock.patch("builtins.input", lambda *a, **kw: next(responses)):
+            code, out, _err = run_cli(
+                "upgrade", "nda/house-mutual-startup",
+                "--interactive-explain",
+            )
+        self.assertEqual(code, 0)
+        # The explain prompt was triggered and LLM was called with the diff:
+        self.assertIn("[LLM]", out)
+        self.assertIn("survival period", out)
+        # And the LLM call carries a unified diff of one clause:
+        self.assertIn("```diff", captured["user"])
+        self.assertIn("Clause:", captured["user"])
+        self.assertRegex(captured["user"], r"^---|@@ ")
+
+
 if __name__ == "__main__":
     unittest.main()

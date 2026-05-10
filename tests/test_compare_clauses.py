@@ -27,7 +27,7 @@ class CompareClausesTests(CliCase):
         self.assertIn("Residual Knowledge", out)
         self.assertIn("Only in nda/yc", out)
 
-    def test_symmetric_marks_same_vs_different(self):
+    def test_symmetric_shows_similarity_for_changed_clause(self):
         # Make a copy, then mutate one clause body
         add_template(self.vault, "nda", "house2", SAMPLE_NDA_MUTUAL)
         f = self.vault / "nda" / "house2" / "v1.md"
@@ -35,9 +35,26 @@ class CompareClausesTests(CliCase):
         f.write_text(body)
         code, out, _err = run_cli("compare-clauses", "nda/house", "nda/house2")
         self.assertEqual(code, 0)
-        self.assertIn("[different]", out)
-        # Other clauses untouched → "[same]"
-        self.assertIn("[same]", out)
+        # Changed clause shows a similarity ratio (not 1.00).
+        self.assertIn("sim=", out)
+        # Other clauses untouched → "[identical]"
+        self.assertIn("[identical]", out)
+
+    def test_symmetric_pairs_clauses_via_alias(self):
+        # Two templates that name the same clause differently should still
+        # appear as common when an alias is declared.
+        import json as _json
+        add_template(self.vault, "nda", "alt",
+                     "## Termination\nTwo years.\n## Other\nx\n")
+        # Add an alias on nda/house declaring "Termination" == "Term and Survival"
+        mp = self.vault / "nda" / "house" / "meta.json"
+        meta = _json.loads(mp.read_text())
+        meta["clause_aliases"] = {"Term and Survival": ["Termination"]}
+        mp.write_text(_json.dumps(meta, indent=2) + "\n")
+        code, out, _err = run_cli("compare-clauses", "nda/house", "nda/alt")
+        self.assertEqual(code, 0)
+        # Should appear in Common, with both titles surfaced.
+        self.assertIn("Term and Survival / Termination", out)
 
     def test_per_clause_emits_unified_diff(self):
         code, out, _err = run_cli(
