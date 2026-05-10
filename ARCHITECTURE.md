@@ -48,7 +48,8 @@ ordering and the latest pointer.
   "derived_from": null,
   "forked_at_parent_version": null,
   "clauses": null,
-  "clause_overrides": []
+  "clause_overrides": [],
+  "clause_aliases": {}
 }
 ```
 
@@ -88,15 +89,75 @@ A clause's body runs from its `^## ` line to the next `^## ` line (or EOF).
 ### Title normalization
 
 For matching by title (in `swap`, `compare-clauses`, `upgrade`), titles are
-case-insensitively compared after stripping a leading number prefix:
+case-insensitively compared after stripping a leading numbering token. The
+supported prefix shapes are:
 
 ```
-"## 4. Term and Survival"   → "Term and Survival"
-"## 4) Term and Survival"   → "Term and Survival"
-"## Term and Survival"      → "Term and Survival"
+"## 4. Term and Survival"          → "Term and Survival"
+"## 4) Term and Survival"          → "Term and Survival"
+"## (4) Term and Survival"         → "Term and Survival"
+"## [4] Term and Survival"         → "Term and Survival"
+"## 4.2 Term and Survival"         → "Term and Survival"
+"## 4.2.1 Term and Survival"       → "Term and Survival"
+"## Article 4. Term and Survival"  → "Term and Survival"
+"## Article IV. Term and Survival" → "Term and Survival"
+"## Section 4. Term and Survival"  → "Term and Survival"
+"## § 4. Term and Survival"        → "Term and Survival"
+"## Clause 4. Term and Survival"   → "Term and Survival"
+"## Term and Survival"             → "Term and Survival"
 ```
 
-A swap that names `"Term and Survival"` matches all three header styles.
+A swap that names `"Term and Survival"` matches all of these. Unprefixed
+titles are returned unchanged. Bare Roman numerals (`## IV. Term`) without
+the `Article`/`Section` word are **not** stripped — too risky a false-positive
+on titles that happen to start with `I`/`V`. Use the explicit map below for
+that case.
+
+### Looking up clauses by name
+
+`find_clause_by_title(clauses, query)` resolves a user-supplied name to a
+specific clause. The order is:
+
+1. **Exact match** on the normalized title or any declared alias.
+2. **Substring match** on the title or any alias.
+3. If step 2 finds **more than one** distinct clause, raise `VaultError`
+   listing the candidates instead of silently picking the first. The user
+   can re-run with the full title to disambiguate.
+
+This matters because the substring fallback used to silently shadow real
+ambiguity — `--clause "term"` could match either "Term and Survival" or
+"Termination" depending on document order. The new behavior surfaces the
+ambiguity.
+
+### Aliases (`clause_aliases`)
+
+A template's `meta.json` may declare alternate names for a clause:
+
+```json
+"clause_aliases": {
+  "Term and Survival": ["Termination", "Duration of Obligations"]
+}
+```
+
+The key must match a real (auto-detected or explicitly mapped) clause title;
+the values are alternate names accepted by `swap --clause …`,
+`compare-clauses --clause …`, and `upgrade`. Aliases are normalized the same
+way as titles, so `"1. Termination"` works as an alias for "Term and Survival".
+
+`doctor` flags `clause_aliases` keys that don't resolve to any detected
+clause title in the template.
+
+`clause-library` builds a vault-wide equivalence union over all templates'
+aliases — declaring `"Term and Survival": ["Termination"]` on **any one**
+template tells the clustering pass to put both titles in the same bucket
+across the whole vault. Clusters annotate non-canonical members so the
+output stays honest:
+
+```
+- Term and Survival  (n=2, mean_similarity=0.91)
+    · nda/house@v1
+    · nda/yc@v1  (as 'Termination')
+```
 
 ### Explicit clauses map
 
@@ -181,14 +242,22 @@ under `clauses/<category>/<slug>.md`.
 
 ### Clustering
 
-1. **Group by title.** Walk every template, detect clauses, and bucket them by
-   case-folded clause title. Single-occurrence titles are dropped.
-2. **Cluster within a title bucket.** Greedy single-pass: take the first
-   unconsumed occurrence as the cluster seed, then add any other occurrence
-   whose body's `difflib.SequenceMatcher.ratio()` against the seed is at least
-   `--threshold` (default `0.85`). Members consumed by one cluster cannot start
-   or join another. This is O(n²) per title bucket but n is small in practice.
-3. **Sort clusters** by descending member count, then descending mean
+1. **Build an equivalence map.** Walk every template's `clause_aliases` and
+   union each (title, alias) pair into a single string-keyed union-find. The
+   representative is the lexicographically smallest member of each class —
+   deterministic across runs.
+2. **Bucket occurrences** by union-find representative (not raw title). This
+   is what lets `"Term and Survival"` and `"Termination"` cluster together
+   when an alias is declared on either side.
+3. **Cluster within a bucket.** Greedy single-pass: take the first unconsumed
+   occurrence as the cluster seed, then add any other occurrence whose body's
+   `difflib.SequenceMatcher.ratio()` against the seed is at least
+   `--threshold` (default `0.85`). Members consumed by one cluster cannot
+   start or join another. Comparison runs on the body **with the H2 header
+   line stripped**, because `## 4. Foo` and `## 7. Foo` have byte-identical
+   bodies but different headers; including the header line was depressing
+   the ratio and under-clustering. O(n²) per bucket; n is small in practice.
+4. **Sort clusters** by descending member count, then descending mean
    similarity, then alphabetically by title.
 
 The threshold is intentionally tunable. `0.85` catches "same clause with party
