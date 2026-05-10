@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "_comment": "Bundled public-source registry. Hash pinning is opt-in: leave 'sha256' as null to skip hash verification on import; populate it (or use 'import --pin-hash') to verify on subsequent fetches. URLs point at canonical upstream sources; texts are NEVER bundled in this repo.",
+  "sources": [
+    {
+      "id": "common-paper-mutual-nda",
+      "category": "nda",
+      "name": "common-paper-mutual",
+      "url": "https://commonpaper.com/standards/mutual-nda/",
+      "license": "CC BY 4.0",
+      "attribution": "Standards by Common Paper, licensed CC BY 4.0",
+      "sha256": null,
+      "summary": "Common Paper mutual NDA — short-form, plain-English, widely adopted by US startups for vendor and partnership diligence.",
+      "tags": ["mutual", "short-form", "common-paper"]
+    },
+    {
+      "id": "common-paper-one-way-nda",
+      "category": "nda",
+      "name": "common-paper-one-way",
+      "url": "https://commonpaper.com/standards/one-way-nda/",
+      "license": "CC BY 4.0",
+      "attribution": "Standards by Common Paper, licensed CC BY 4.0",
+      "sha256": null,
+      "summary": "Common Paper one-way NDA for unilateral disclosure (e.g. pitching investors, vendor discovery).",
+      "tags": ["one-way", "short-form", "common-paper"]
+    },
+    {
+      "id": "common-paper-data-processing",
+      "category": "dpa",
+      "name": "common-paper-dpa",
+      "url": "https://commonpaper.com/standards/data-processing-agreement/",
+      "license": "CC BY 4.0",
+      "attribution": "Standards by Common Paper, licensed CC BY 4.0",
+      "sha256": null,
+      "summary": "Common Paper DPA, covers GDPR processor obligations, sub-processors, and SCCs by reference.",
+      "tags": ["gdpr", "dpa", "common-paper"]
+    },
+    {
+      "id": "yc-safe-post-money-2018",
+      "category": "investment",
+      "name": "yc-safe-post-money",
+      "url": "https://www.ycombinator.com/documents/SAFE_Primer_2018.pdf",
+      "license": "freely usable (Y Combinator)",
+      "attribution": "Y Combinator SAFE post-money, 2018 revision",
+      "sha256": null,
+      "summary": "YC SAFE (post-money valuation cap), 2018 standard. The default modern early-stage SAFE.",
+      "tags": ["safe", "yc", "post-money"]
+    },
+    {
+      "id": "yc-safe-pre-money-2018",
+      "category": "investment",
+      "name": "yc-safe-pre-money",
+      "url": "https://www.ycombinator.com/documents/safe-primer-pre-money-2018.pdf",
+      "license": "freely usable (Y Combinator)",
+      "attribution": "Y Combinator SAFE pre-money, 2018 revision",
+      "sha256": null,
+      "summary": "YC SAFE (pre-money valuation cap), 2018 standard. Less common today; included for legacy alignment.",
+      "tags": ["safe", "yc", "pre-money"]
+    },
+    {
+      "id": "bonterms-cloud-terms",
+      "category": "msa",
+      "name": "bonterms-cloud-terms",
+      "url": "https://bonterms.com/forms/cloud-terms/",
+      "license": "free to use, no warranty (Bonterms)",
+      "attribution": "Bonterms Cloud Terms, used per Bonterms terms-of-use",
+      "sha256": null,
+      "summary": "Bonterms Cloud Terms — community-standard cloud-services agreement covering availability, security, and termination.",
+      "tags": ["bonterms", "cloud", "msa"]
+    }
+  ]
+}

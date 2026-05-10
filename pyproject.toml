@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "template-vault-cli"
+version = "0.1.0"
+description = "Git-backed, clause-aware legal-document template manager. Stdlib-only Python."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "DrBaher" }]
+keywords = [
+  "legal",
+  "templates",
+  "contracts",
+  "nda",
+  "git",
+  "vault",
+  "clause-composition",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Legal Industry",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business",
+  "Topic :: Utilities",
+]
+# No runtime dependencies. Stdlib-only by design.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/DrBaher/template-vault-cli"
+Source = "https://github.com/DrBaher/template-vault-cli"
+Issues = "https://github.com/DrBaher/template-vault-cli/issues"
+Changelog = "https://github.com/DrBaher/template-vault-cli/blob/main/CHANGELOG.md"
+
+[project.scripts]
+template-vault = "template_vault_cli:main"
+
+[tool.hatch.build.targets.wheel]
+include = [
+  "template_vault_cli.py",
+  "config/default-sources.json",
+  "config/llm.json.example",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"template_vault_cli.py" = "template_vault_cli.py"
+"config/default-sources.json" = "config/default-sources.json"
+"config/llm.json.example" = "config/llm.json.example"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "template_vault_cli.py",
+  "config",
+  "tests",
+  "README.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  "ARCHITECTURE.md",
+  "SECURITY.md",
+  "FAQ.md",
+  "GETTING_STARTED.md",
+  "CONTRIBUTING.md",
+  "Makefile",
+]
