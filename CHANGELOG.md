@@ -6,7 +6,56 @@ and the project adheres to semantic versioning once it leaves 0.x.
 
 ## Unreleased
 
-### Added
+### Added — round 3 (capability lift)
+
+- **Bold-prefix + ALL-CAPS heading fallback** in `detect_clauses`. Runs only
+  when H2 detection returns empty — so it can't shadow real H2 sections.
+  Catches DOCX-converted templates that use `**1. Purpose**` or
+  `CONFIDENTIALITY OBLIGATIONS`. Brings the bulk of real-world legal-team
+  source documents into the auto-detected pool.
+- **`.docx` ingestion** via `pip install template-vault-cli[docx]`. `upload x.docx`
+  converts paragraphs to Markdown using the document's existing heading
+  styles (`Heading 1` → `#`, `Heading 2` → `##`, etc.), so H2 detection
+  works downstream. Optional dependency — stdlib-only default holds. Without
+  the extra, uploading a `.docx` errors with the install hint.
+- **`clause-library --suggest-aliases`.** After clustering, surfaces clause
+  pairs across templates that have similar bodies but different titles AND
+  aren't already aliased. Output is grouped by canonical title pair with
+  best-similarity ratio and a list of templates the pair appears in. Pure
+  deterministic; no LLM. Closes the "user has to type the alias map by hand"
+  gap.
+- **Vault-level `template_defaults`** in `.vault.json`. Repository-wide
+  defaults (license, owner, jurisdiction, etc.) overlay underneath each
+  per-template meta. Per-template values always win. Nothing is ever
+  persisted back into the per-template file.
+- **Vault-level `clause_aliases`** in `.vault.json`. Repository-wide alias
+  map applies to every template; per-template aliases are unioned with
+  vault-level for the same canonical title.
+- **`info --json`** emits a structured payload (meta + detected clauses +
+  resolved aliases + clause overrides). Designed for downstream consumers
+  like `nda-review-cli` that need the data without scraping text.
+- **`compare-clauses` similarity table** when `--clause` is omitted. Replaces
+  the binary `[same]`/`[different]` markers with `[identical]` and `[sim=N.NN]`
+  per common clause. Pairing is alias-aware: clauses that have different
+  titles but a declared alias appear under one row labelled
+  `"Term and Survival / Termination"`.
+- **`upload --amend VERSION`.** Overwrites a version file in place rather
+  than bumping a new one. Records the prior content's SHA-256 in the
+  version's `changelog` for auditability. Destructive — needs `--yes-amend`
+  or interactive confirmation.
+- **`upgrade --interactive-explain`.** Adds `?` as a third option at the
+  per-clause prompt; typing it sends the diff to the configured LLM and
+  prints a one-paragraph plain-English explanation, then re-prompts `[y/N]`.
+  Opt-in only — sends template content off-device, gated by the flag.
+
+### Changed — round 3
+- `iter_templates` now returns `load_meta_resolved` (overlaid) so read-only
+  paths (find, list, clause-library, ask listing) get vault-level defaults.
+  Mutating commands (swap, upgrade) load raw and use `effective_clause_aliases`
+  for matching, so save_meta never persists overlaid values.
+- `info` now displays `owner` in the human-readable output.
+
+### Added — round 2
 - **Clause aliases.** New `clause_aliases` field in `meta.json` maps a
   canonical clause title to a list of accepted alternate names:
   `{"Term and Survival": ["Termination", "Duration"]}`. `swap`,

@@ -86,6 +86,31 @@ META_DEFAULTS = {
 # Auto-detect clause headers by H2 only (not H3+). Anchored at line start.
 H2_RE = re.compile(r"^##[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
+# Fallback heading patterns for non-Markdown-conformant templates (typically
+# DOCX → text conversions). These ONLY run when H2 detection returns empty,
+# so they can't shadow real H2 sections. Each pattern captures the title.
+#
+# - Bold-numbered:  **1. Purpose**  /  **Section 4. Term**
+# - ALL-CAPS line:  CONFIDENTIALITY OBLIGATIONS  (≥4 chars, ≥2 letters,
+#   surrounded by blank lines so we don't snag inline shouts)
+_BOLD_HEADING_RE = re.compile(
+    r"^\*\*\s*"
+    r"(?:"
+    r"(?:Article|Section|Sec\.?|Art\.?|Clause|Part|§)\s+\S+\.?"  # word-prefixed
+    r"|"
+    r"\(\d+\)"                                                    # (1)
+    r"|"
+    r"\d+(?:\.\d+)*"                                              # 1 / 1.2.3
+    r")"
+    r"[\.\):\s]+"
+    r"([^\*\n]+?)"
+    r"\s*\*\*\s*$",
+    re.MULTILINE,
+)
+_ALL_CAPS_HEADING_RE = re.compile(
+    r"(?:^|\n)\n([A-Z][A-Z0-9 \-/&,]{3,}[A-Z0-9])\s*\n\n",
+)
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -158,6 +183,12 @@ def validate_vault_config(cfg: Dict[str, Any]) -> List[str]:
     sources = cfg.get("sources")
     if sources is not None and not isinstance(sources, list):
         errors.append("'sources' must be a list when present")
+    td = cfg.get("template_defaults")
+    if td is not None and not isinstance(td, dict):
+        errors.append("'template_defaults' must be a JSON object when present")
+    ca = cfg.get("clause_aliases")
+    if ca is not None and not isinstance(ca, dict):
+        errors.append("'clause_aliases' must be a JSON object when present")
     return errors
 
 
@@ -176,6 +207,11 @@ def template_dir(root: Path, category: str, name: str) -> Path:
 
 
 def load_meta(t_dir: Path) -> Dict[str, Any]:
+    """Read the raw per-template meta.json. Mutating callers use this and
+    round-trip through `save_meta` without leaking vault-level defaults into
+    the file. For read-mostly use that wants vault defaults overlaid, call
+    `load_meta_resolved` instead.
+    """
     mp = t_dir / META_FILENAME
     if not mp.exists():
         raise NotFoundError(f"Missing {META_FILENAME} in {t_dir}")
@@ -184,6 +220,71 @@ def load_meta(t_dir: Path) -> Dict[str, Any]:
     except json.JSONDecodeError as e:
         raise VaultError(f"Malformed {mp}: {e.msg}") from e
     return meta
+
+
+def effective_clause_aliases(t_dir: Path,
+                             raw_meta: Optional[Dict[str, Any]] = None
+                             ) -> Optional[Dict[str, List[str]]]:
+    """Return the alias map a mutating command should USE (per-template
+    unioned with vault-level) without forcing the caller to round-trip the
+    overlay back through `save_meta`."""
+    meta = raw_meta if raw_meta is not None else load_meta(t_dir)
+    try:
+        cfg = read_vault_config(find_vault_root(t_dir))
+    except (NotFoundError, VaultError):
+        per = meta.get("clause_aliases")
+        return per if isinstance(per, dict) and per else None
+    overlaid = _overlay_vault_defaults(meta, cfg)
+    out = overlaid.get("clause_aliases")
+    return out if isinstance(out, dict) and out else None
+
+
+def load_meta_resolved(t_dir: Path) -> Dict[str, Any]:
+    """Like `load_meta`, but overlays vault-level `template_defaults` and
+    `clause_aliases` from .vault.json. Per-template values always win on
+    scalar/list keys; for `clause_aliases` (a dict) per-template aliases are
+    unioned with vault-level aliases for the same canonical title."""
+    meta = load_meta(t_dir)
+    try:
+        vault_root = find_vault_root(t_dir)
+        cfg = read_vault_config(vault_root)
+    except (NotFoundError, VaultError):
+        return meta
+    return _overlay_vault_defaults(meta, cfg)
+
+
+def _overlay_vault_defaults(meta: Dict[str, Any], cfg: Dict[str, Any]
+                            ) -> Dict[str, Any]:
+    """Merge .vault.json's `template_defaults` (a partial meta.json) and
+    `clause_aliases` (a vault-wide alias map) underneath the per-template
+    meta. Per-template values always win on key collision; for
+    `clause_aliases` (a dict) the per-template entries override matching
+    keys in the vault-level dict, and aliases for a given canonical title
+    are unioned across both layers.
+    """
+    out = dict(meta)
+    defaults = cfg.get("template_defaults") if isinstance(cfg.get("template_defaults"), dict) else None
+    if defaults:
+        for k, v in defaults.items():
+            if k not in out or out[k] in (None, "", [], {}):
+                # Deep-ish copy so callers can't mutate the cfg by accident.
+                out[k] = type(v)(v) if isinstance(v, (list, dict)) else v
+    vault_aliases = cfg.get("clause_aliases") if isinstance(cfg.get("clause_aliases"), dict) else None
+    if vault_aliases:
+        merged: Dict[str, List[str]] = {}
+        for k, v in vault_aliases.items():
+            if isinstance(v, list):
+                merged[k] = list(v)
+        per = out.get("clause_aliases") or {}
+        if isinstance(per, dict):
+            for k, v in per.items():
+                if not isinstance(v, list):
+                    continue
+                # Union with vault-level aliases for the same canonical key.
+                existing = merged.get(k, [])
+                merged[k] = list(dict.fromkeys(existing + list(v)))
+        out["clause_aliases"] = merged
+    return out
 
 
 def save_meta(t_dir: Path, meta: Dict[str, Any]) -> None:
@@ -238,14 +339,20 @@ def fill_meta_defaults(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def iter_templates(root: Path) -> Iterable[Tuple[str, str, Path, Dict[str, Any]]]:
-    """Yield (category, name, path, meta) for every template in the vault."""
+    """Yield (category, name, path, meta) for every template in the vault.
+
+    Meta is `load_meta_resolved`: vault-level defaults from `.vault.json` are
+    overlaid. All callers of `iter_templates` are read-only paths (list, find,
+    clause-library, ask listing builder), so it's safe to surface the merged
+    view here. Mutating commands load per-template meta directly.
+    """
     for cat_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
         if cat_dir.name in {"config", "tests", ".git", ".github", "clauses"}:
             continue
         for t_dir in sorted(p for p in cat_dir.iterdir() if p.is_dir()):
             if (t_dir / META_FILENAME).exists():
                 try:
-                    meta = load_meta(t_dir)
+                    meta = load_meta_resolved(t_dir)
                 except VaultError:
                     continue
                 yield cat_dir.name, t_dir.name, t_dir, meta
@@ -337,8 +444,51 @@ def detect_clauses(text: str,
             end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
             clauses.append({"title": title, "anchor": anchor,
                             "start": start, "end": end})
+        # Fallback only — never shadows real H2 sections.
+        if not clauses:
+            clauses = _detect_fallback_headings(text)
     _attach_aliases(clauses, aliases_map)
     return clauses
+
+
+def _detect_fallback_headings(text: str) -> List[Dict[str, Any]]:
+    """Best-effort detection for non-H2 templates (typically DOCX-converted).
+
+    Tries bold-numbered headings (`**1. Purpose**`) first, then ALL-CAPS
+    standalone lines. Returns the first non-empty result. Conservative on
+    purpose — false negatives (zero clauses) are better than false positives
+    (a clause inside a clause body); the user can always fall back to the
+    explicit `clauses` map in meta.json.
+    """
+    matches = list(_BOLD_HEADING_RE.finditer(text))
+    if len(matches) >= 2:
+        return _matches_to_clauses(text, matches, group=1)
+    matches = list(_ALL_CAPS_HEADING_RE.finditer(text))
+    if len(matches) >= 2:
+        return _matches_to_clauses(text, matches, group=1)
+    return []
+
+
+def _matches_to_clauses(text: str, matches: List["re.Match[str]"],
+                        group: int) -> List[Dict[str, Any]]:
+    """Build clause dicts from a list of regex matches whose `group` is the
+    title and whose match span includes the heading line itself."""
+    out: List[Dict[str, Any]] = []
+    for i, m in enumerate(matches):
+        title = _strip_clause_number(m.group(group).strip())
+        # Anchor is the matched heading text exactly as it appears.
+        # For ALL_CAPS we step past the leading newline gap captured by the regex.
+        anchor_start = text.rfind(m.group(group), m.start(), m.end())
+        anchor_line_start = text.rfind("\n", 0, anchor_start) + 1
+        anchor_line_end = text.find("\n", anchor_line_start)
+        if anchor_line_end == -1:
+            anchor_line_end = len(text)
+        anchor = text[anchor_line_start:anchor_line_end]
+        start = anchor_line_start
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        out.append({"title": title, "anchor": anchor,
+                    "start": start, "end": end})
+    return out
 
 
 def _norm_clause_key(s: str) -> str:
@@ -730,6 +880,43 @@ def _prompt(label: str, default: Optional[str] = None,
     return ans or (default or "")
 
 
+def _docx_to_markdown(src: Path) -> str:
+    """Convert a .docx to a Markdown string. Headings → `#`/`##`/...; other
+    paragraphs → prose lines. Lazily imports python-docx; raises VaultError
+    with install instructions if the extra isn't installed."""
+    try:
+        import docx as _docx  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise VaultError(
+            "Uploading .docx requires the optional [docx] extra. "
+            "Install with: pip install template-vault-cli[docx]"
+        ) from e
+    try:
+        document = _docx.Document(str(src))
+    except Exception as e:
+        raise VaultError(f"Could not read {src.name} as a .docx: {e}") from e
+    out: List[str] = []
+    for para in document.paragraphs:
+        style = (getattr(para.style, "name", "") or "").strip()
+        text = (para.text or "").rstrip()
+        if not text:
+            out.append("")
+            continue
+        if style.lower().startswith("heading "):
+            tail = style[len("Heading "):].strip()
+            try:
+                level = max(1, min(6, int(tail)))
+            except ValueError:
+                level = 2  # unknown heading style → treat as H2
+            out.append(("#" * level) + " " + text)
+        elif style.lower() in {"title"}:
+            out.append("# " + text)
+        else:
+            out.append(text)
+    md = "\n".join(out).strip() + "\n"
+    return md
+
+
 def cmd_upload(args: argparse.Namespace) -> int:
     root = find_vault_root()
     src = Path(args.file).resolve()
@@ -741,6 +928,14 @@ def cmd_upload(args: argparse.Namespace) -> int:
         raise VaultError("--category and --name are required")
     t_dir = template_dir(root, category, name)
     new = not t_dir.exists()
+
+    # If the input is .docx, convert to Markdown. The vault stores Markdown so
+    # H2 clause detection works downstream. The original .docx is not kept.
+    is_docx = src.suffix.lower() == ".docx"
+    converted_text: Optional[str] = None
+    if is_docx:
+        converted_text = _docx_to_markdown(src)
+
     t_dir.mkdir(parents=True, exist_ok=True)
 
     # Load or initialize meta
@@ -755,21 +950,78 @@ def cmd_upload(args: argparse.Namespace) -> int:
         }
     meta = fill_meta_defaults(meta)
 
+    # --amend mode: overwrite an existing version in place rather than
+    # appending a new one. Records the SHA-256 of the prior content in the
+    # version's changelog so the change is auditable in git.
+    if getattr(args, "amend", None):
+        amend_vid = args.amend
+        target = next((v for v in meta["versions"] if v.get("id") == amend_vid), None)
+        if target is None:
+            raise VaultError(
+                f"--amend {amend_vid}: no such version in {category}/{name}. "
+                f"Existing: {', '.join(v.get('id') for v in meta['versions']) or '(none)'}"
+            )
+        existing_files = sorted(p for p in t_dir.glob(f"{amend_vid}.*") if p.is_file())
+        if not existing_files:
+            raise VaultError(f"--amend: version {amend_vid} has no file on disk")
+        if len(existing_files) > 1:
+            raise VaultError(
+                f"--amend: ambiguous file for {amend_vid}: {[p.name for p in existing_files]}"
+            )
+        old_path = existing_files[0]
+        if not (args.yes_amend or args.non_interactive):
+            try:
+                ans = input(
+                    f"Overwrite {old_path.relative_to(root)} in place? "
+                    f"This is a destructive operation; the prior content's "
+                    f"SHA-256 will be recorded in the version's changelog. [y/N] "
+                ).strip().lower()
+            except EOFError:
+                ans = "n"
+            if ans != "y":
+                _eprint("aborted")
+                return 1
+        old_bytes = old_path.read_bytes()
+        old_sha = sha256_bytes(old_bytes)
+        new_bytes = converted_text.encode("utf-8") if converted_text is not None else src.read_bytes()
+        old_path.write_bytes(new_bytes)
+        amend_note = f"amended (prior sha256: {old_sha})"
+        if args.changelog:
+            amend_note = f"{args.changelog} — {amend_note}"
+        target["changelog"] = amend_note
+        target["amended"] = _today_iso()
+        save_meta(t_dir, meta)
+        print(f"Amended: {category}/{name}@{amend_vid}")
+        print(f"  file: {old_path.relative_to(root)}  ({len(new_bytes)} bytes)")
+        print(f"  prior sha256: {old_sha}")
+        return 0
+
     # Determine version id
     vid = args.version or auto_increment_version(meta)
     if vid in {v.get("id") for v in meta["versions"]}:
         raise VaultError(f"Version {vid!r} already exists for {category}/{name}")
 
-    # Copy file
-    dest = t_dir / f"{vid}{src.suffix.lower() or '.md'}"
-    dest.write_bytes(src.read_bytes())
+    # Copy file (or write converted Markdown for .docx).
+    dest_suffix = ".md" if is_docx else (src.suffix.lower() or ".md")
+    dest = t_dir / f"{vid}{dest_suffix}"
+    if converted_text is not None:
+        dest.write_text(converted_text)
+    else:
+        dest.write_bytes(src.read_bytes())
 
     # Append version entry
+    base_changelog = args.changelog or (
+        "initial" if not meta["versions"] else f"superseded {args.supersedes or ''}".strip()
+    )
+    if is_docx:
+        base_changelog = (
+            f"{base_changelog} — converted from {src.name}"
+        )
     entry = {
         "id": vid,
         "added": _today_iso(),
         "supersedes": args.supersedes,
-        "changelog": args.changelog or ("initial" if not meta["versions"] else f"superseded {args.supersedes or ''}".strip()),
+        "changelog": base_changelog,
     }
     meta["versions"].append(entry)
     meta["latest_version"] = vid
@@ -936,7 +1188,48 @@ def cmd_info(args: argparse.Namespace) -> int:
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
         raise NotFoundError(f"No such template: {cat}/{name}")
-    meta = load_meta(t_dir)
+    meta = load_meta_resolved(t_dir)
+    if getattr(args, "json", False):
+        # Structured payload for downstream tools (e.g. nda-review-cli).
+        try:
+            f = resolve_version_file(t_dir, meta, None)
+            text = f.read_text()
+            cs = detect_clauses(
+                text,
+                explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
+                aliases_map=meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None,
+            )
+            clause_summary = [
+                {"title": c["title"], "anchor": c["anchor"], "aliases": c.get("aliases") or []}
+                for c in cs
+            ]
+            latest_path = str(f)
+        except (VaultError, OSError):
+            clause_summary = []
+            latest_path = None
+        payload = {
+            "ref": f"{cat}/{name}",
+            "latest_version": meta.get("latest_version"),
+            "latest_path": latest_path,
+            "version_count": len(meta.get("versions") or []),
+            "jurisdiction": list(meta.get("jurisdiction") or []),
+            "party_type": list(meta.get("party_type") or []),
+            "deal_type": list(meta.get("deal_type") or []),
+            "tags": list(meta.get("tags") or []),
+            "license": meta.get("license"),
+            "source": meta.get("source"),
+            "derived_from": meta.get("derived_from"),
+            "forked_at_parent_version": meta.get("forked_at_parent_version"),
+            "summary": meta.get("summary") or "",
+            "use_count": meta.get("use_count") or 0,
+            "last_used": meta.get("last_used"),
+            "clauses": clause_summary,
+            "clause_overrides": list(meta.get("clause_overrides") or []),
+            "clause_aliases": dict(meta.get("clause_aliases") or {}),
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
     print(f"{cat}/{name}")
     print(f"  latest:        {meta.get('latest_version')}")
     print(f"  versions:      {len(meta.get('versions') or [])}")
@@ -945,6 +1238,7 @@ def cmd_info(args: argparse.Namespace) -> int:
     print(f"  deal_type:     {', '.join(meta.get('deal_type') or []) or '-'}")
     print(f"  tags:          {', '.join(meta.get('tags') or []) or '-'}")
     print(f"  license:       {meta.get('license')}")
+    print(f"  owner:         {meta.get('owner') or '-'}")
     print(f"  source:        {meta.get('source') or '-'}")
     print(f"  derived_from:  {meta.get('derived_from') or '-'}")
     print(f"  used:          {meta.get('use_count')} (last: {meta.get('last_used') or '-'})")
@@ -985,7 +1279,7 @@ def _load_template_text_and_clauses(root: Path, cat: str, name: str,
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
         raise NotFoundError(f"No such template: {cat}/{name}")
-    meta = load_meta(t_dir)
+    meta = load_meta_resolved(t_dir)
     f = resolve_version_file(t_dir, meta, version)
     text = f.read_text()
     explicit = meta.get("clauses")
@@ -1092,12 +1386,12 @@ def cmd_swap(args: argparse.Namespace) -> int:
     target_clauses = detect_clauses(
         target_text,
         explicit_map=target_meta.get("clauses") if isinstance(target_meta.get("clauses"), list) else None,
-        aliases_map=target_meta.get("clause_aliases") if isinstance(target_meta.get("clause_aliases"), dict) else None,
+        aliases_map=effective_clause_aliases(target_dir, target_meta),
     )
     src_clauses = detect_clauses(
         src_text,
         explicit_map=src_meta.get("clauses") if isinstance(src_meta.get("clauses"), list) else None,
-        aliases_map=src_meta.get("clause_aliases") if isinstance(src_meta.get("clause_aliases"), dict) else None,
+        aliases_map=effective_clause_aliases(src_dir, src_meta),
     )
     src_clause = find_clause_by_title(src_clauses, args.clause)
     if src_clause is None:
@@ -1174,34 +1468,92 @@ def cmd_compare_clauses(args: argparse.Namespace) -> int:
         sys.stdout.writelines(out)
         return 0
 
-    # Index by title (case-insensitive) for symmetric diff
-    a_titles = {c["title"].lower(): c for c in a_clauses}
-    b_titles = {c["title"].lower(): c for c in b_clauses}
-    common = sorted(set(a_titles) & set(b_titles))
-    only_a = sorted(set(a_titles) - set(b_titles))
-    only_b = sorted(set(b_titles) - set(a_titles))
+    # Build alias-aware equivalence over both templates' titles + aliases.
+    eq = _UnionFind()
+    for c in a_clauses + b_clauses:
+        t = c["title"].lower()
+        eq.add(t)
+        for a in (c.get("aliases") or []):
+            eq.union(t, a)
+
+    a_by_repr: Dict[str, Dict[str, Any]] = {}
+    b_by_repr: Dict[str, Dict[str, Any]] = {}
+    for c in a_clauses:
+        a_by_repr.setdefault(eq.find(c["title"].lower()), c)
+    for c in b_clauses:
+        b_by_repr.setdefault(eq.find(c["title"].lower()), c)
+
+    common = sorted(set(a_by_repr) & set(b_by_repr))
+    only_a = sorted(set(a_by_repr) - set(b_by_repr))
+    only_b = sorted(set(b_by_repr) - set(a_by_repr))
     print(f"# {a_label}  vs  {b_label}")
     print()
     print(f"## Common clauses ({len(common)})")
-    for t in common:
-        a_body = slice_clause_text(a_text, a_titles[t]).strip()
-        b_body = slice_clause_text(b_text, b_titles[t]).strip()
-        marker = "same" if a_body == b_body else "different"
-        print(f"  - {a_titles[t]['title']}  [{marker}]")
+    if common:
+        # Width the title column so the similarity column lines up.
+        labels = []
+        for k in common:
+            ac = a_by_repr[k]
+            bc = b_by_repr[k]
+            label = ac["title"]
+            if bc["title"].lower() != ac["title"].lower():
+                label = f"{ac['title']} / {bc['title']}"
+            labels.append((k, label))
+        width = max(len(lab) for _k, lab in labels)
+        for k, label in labels:
+            ac = a_by_repr[k]
+            bc = b_by_repr[k]
+            a_body = _strip_header_line(slice_clause_text(a_text, ac))
+            b_body = _strip_header_line(slice_clause_text(b_text, bc))
+            ratio = difflib.SequenceMatcher(None, a_body, b_body).ratio()
+            marker = "identical" if a_body == b_body else f"sim={ratio:.2f}"
+            print(f"  - {label.ljust(width)}    [{marker}]")
     print()
     print(f"## Only in {a_label} ({len(only_a)})")
-    for t in only_a:
-        print(f"  - {a_titles[t]['title']}")
+    for k in only_a:
+        print(f"  - {a_by_repr[k]['title']}")
     print()
     print(f"## Only in {b_label} ({len(only_b)})")
-    for t in only_b:
-        print(f"  - {b_titles[t]['title']}")
+    for k in only_b:
+        print(f"  - {b_by_repr[k]['title']}")
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Command: upgrade
 # ---------------------------------------------------------------------------
+
+
+def _llm_explain_clause_diff(args: argparse.Namespace, *, clause_title: str,
+                             old_body: str, new_body: str, parent_label: str,
+                             old_ver: str, new_ver: str) -> str:
+    """Send a clause diff to the configured LLM and return a one-paragraph
+    explanation. The user opts into this with `--interactive-explain` and
+    by typing `?` at the prompt; that's the consent gate (the diff content
+    leaves the local machine)."""
+    cfg = _load_llm_config(args)
+    diff_lines = list(difflib.unified_diff(
+        old_body.splitlines(keepends=True),
+        new_body.splitlines(keepends=True),
+        fromfile=f"{parent_label}@{old_ver}",
+        tofile=f"{parent_label}@{new_ver}",
+        n=3,
+    ))
+    diff_text = "".join(diff_lines)[:4000]
+    system = (
+        "You are a contracts-savvy reviewer. Given a unified diff of one "
+        "clause between two versions of a legal template, write ONE short "
+        "paragraph (≤80 words) that says (a) what changed and (b) what "
+        "risk or shift in obligation that introduces. Be concrete. No "
+        "marketing, no caveats, no list formatting."
+    )
+    user = (
+        f"Clause: {clause_title}\n"
+        f"Parent: {parent_label}\n"
+        f"From: {old_ver}\nTo: {new_ver}\n\n"
+        f"```diff\n{diff_text}\n```"
+    )
+    return _llm_request(cfg, system=system, user=user)
 
 
 def cmd_upgrade(args: argparse.Namespace) -> int:
@@ -1231,14 +1583,14 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     latest_file = resolve_version_file(p_dir, p_meta, parent_latest)
     fork_text = fork_file.read_text()
     latest_text = latest_file.read_text()
-    p_aliases = p_meta.get("clause_aliases") if isinstance(p_meta.get("clause_aliases"), dict) else None
+    p_aliases = effective_clause_aliases(p_dir, p_meta)
     p_explicit = p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None
     fork_clauses = detect_clauses(fork_text, explicit_map=p_explicit, aliases_map=p_aliases)
     latest_clauses = detect_clauses(latest_text, explicit_map=p_explicit, aliases_map=p_aliases)
 
     derived_file = resolve_version_file(t_dir, meta, meta["latest_version"])
     derived_text = derived_file.read_text()
-    d_aliases = meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None
+    d_aliases = effective_clause_aliases(t_dir, meta)
     d_explicit = meta.get("clauses") if isinstance(meta.get("clauses"), list) else None
     derived_clauses = detect_clauses(
         derived_text, explicit_map=d_explicit, aliases_map=d_aliases,
@@ -1287,10 +1639,27 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         if args.accept_all:
             decision = "y"
         else:
-            try:
-                decision = input("Accept this upstream change? [y/N] ").strip().lower()
-            except EOFError:
-                decision = "n"
+            explain_prompt = " or ? for an LLM explanation" if getattr(args, "interactive_explain", False) else ""
+            decision = "n"
+            while True:
+                try:
+                    raw = input(f"Accept this upstream change? [y/N{explain_prompt}] ").strip().lower()
+                except EOFError:
+                    raw = "n"
+                if raw == "?" and getattr(args, "interactive_explain", False):
+                    try:
+                        explanation = _llm_explain_clause_diff(
+                            args, clause_title=fork_idx[title_lc]["title"],
+                            old_body=fb, new_body=lb,
+                            parent_label=f"{p_cat}/{p_name}",
+                            old_ver=parent_v_at_fork, new_ver=parent_latest,
+                        )
+                        print("\n[LLM] " + explanation.strip() + "\n")
+                    except VaultError as exc:
+                        _eprint(f"  (explain failed: {exc})")
+                    continue
+                decision = raw
+                break
         if decision == "y":
             # Re-detect derived clauses against current new_text
             cur_clauses = detect_clauses(
@@ -1388,6 +1757,62 @@ class _UnionFind:
             self._parent[max(ra, rb)] = min(ra, rb)
 
 
+def _suggest_aliases(per_template: List[Tuple[str, str, str, List[Dict[str, Any]], str]],
+                     eq: "_UnionFind", threshold: float) -> None:
+    """Cross-bucket near-misses: clause bodies that look the same but have
+    different normalized titles AND aren't already in the same equivalence
+    class. The user can promote any of these to clause_aliases.
+    """
+    # (normalized_title, raw_title, label, body_no_header)
+    items: List[Tuple[str, str, str, str]] = []
+    for _cat, label, _ver, clauses, text in per_template:
+        for c in clauses:
+            body = _strip_header_line(slice_clause_text(text, c))
+            items.append((c["title"].lower(), c["title"], label, body))
+
+    # Group {(canonical_title_pair) → list of (label_a, label_b, ratio, raw_a, raw_b)}.
+    suggestions: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for i in range(len(items)):
+        ti, raw_i, label_i, body_i = items[i]
+        for j in range(i + 1, len(items)):
+            tj, raw_j, label_j, body_j = items[j]
+            if ti == tj:
+                continue  # already same title bucket
+            if eq.find(ti) == eq.find(tj):
+                continue  # already aliased somewhere
+            r = difflib.SequenceMatcher(None, body_i, body_j).ratio()
+            if r < threshold:
+                continue
+            # Stable order: lexicographic on normalized title.
+            (a_norm, a_raw, a_label), (b_norm, b_raw, b_label) = sorted(
+                ((ti, raw_i, label_i), (tj, raw_j, label_j))
+            )
+            suggestions.setdefault((a_norm, b_norm), []).append({
+                "ratio": r, "a_raw": a_raw, "b_raw": b_raw,
+                "a_label": a_label, "b_label": b_label,
+            })
+
+    if not suggestions:
+        print("\n(no alias suggestions; no near-miss bodies with different titles)")
+        return
+
+    print(f"\nAlias suggestions (sim ≥ {threshold:.2f}, different titles, "
+          f"not already aliased):")
+    sorted_pairs = sorted(suggestions.items(),
+                          key=lambda kv: (-len(kv[1]), -max(s["ratio"] for s in kv[1])))
+    for (_a, _b), entries in sorted_pairs:
+        a_raw = entries[0]["a_raw"]
+        b_raw = entries[0]["b_raw"]
+        max_r = max(s["ratio"] for s in entries)
+        labels = sorted({s["a_label"] for s in entries} | {s["b_label"] for s in entries})
+        print(f"  - {a_raw!r}  ↔  {b_raw!r}   (best sim={max_r:.2f}, "
+              f"in {len(labels)} template(s))")
+        for lab in labels:
+            print(f"      · {lab}")
+    print("\nTo accept a suggestion, add to the canonical template's meta.json:")
+    print('  "clause_aliases": { "<canonical title>": ["<alternate title>"] }')
+
+
 def cmd_clause_library(args: argparse.Namespace) -> int:
     root = find_vault_root()
     threshold = args.threshold
@@ -1455,18 +1880,23 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
                 })
 
     clusters.sort(key=lambda c: (-len(c["members"]), -c["mean_r"], c["title"]))
-    if not clusters:
+    if clusters:
+        for c in clusters:
+            print(f"- {c['title']}  (n={len(c['members'])}, mean_similarity={c['mean_r']:.2f})")
+            for ref, ver, member_title in c["members"]:
+                if member_title.lower() != c["title"].lower():
+                    print(f"    · {ref}@{ver}  (as {member_title!r})")
+                else:
+                    print(f"    · {ref}@{ver}")
+    else:
         print(f"(no clusters above threshold {threshold:.2f})")
-        return 0
-    for c in clusters:
-        print(f"- {c['title']}  (n={len(c['members'])}, mean_similarity={c['mean_r']:.2f})")
-        for ref, ver, member_title in c["members"]:
-            if member_title.lower() != c["title"].lower():
-                print(f"    · {ref}@{ver}  (as {member_title!r})")
-            else:
-                print(f"    · {ref}@{ver}")
+
+    if getattr(args, "suggest_aliases", False):
+        _suggest_aliases(per_template, eq, threshold)
 
     if not args.extract:
+        return 0
+    if not clusters:
         return 0
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -1965,6 +2395,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Opt-in: ask the LLM for a one-paragraph summary")
     p_up.add_argument("--non-interactive", action="store_true",
                       help="Suppress interactive prompts; fail if required fields missing")
+    p_up.add_argument("--amend", metavar="VERSION",
+                      help="Overwrite an existing version in place (destructive). "
+                           "Records the prior content's SHA-256 in the version's "
+                           "changelog. Use for typo fixes; bump a new version for "
+                           "anything substantive.")
+    p_up.add_argument("--yes-amend", action="store_true",
+                      help="Skip the destructive-amend confirmation prompt")
     _add_llm_flags(p_up)
     p_up.set_defaults(func=cmd_upload)
 
@@ -1986,6 +2423,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_info = sub.add_parser("info", help="Show metadata for a template")
     p_info.add_argument("ref")
+    p_info.add_argument("--json", action="store_true",
+                        help="Emit a structured JSON payload (meta + detected clauses + aliases)")
     p_info.set_defaults(func=cmd_info)
 
     p_diff = sub.add_parser("diff", help="Unified diff between two versions of one template")
@@ -2022,6 +2461,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_up2.add_argument("--accept-all", action="store_true")
     p_up2.add_argument("--dry-run", action="store_true",
                        help="Show what would change without writing a new version")
+    p_up2.add_argument("--interactive-explain", action="store_true",
+                       help="Adds '?' as a third option at the per-clause prompt; "
+                            "typing it sends the diff to the configured LLM and "
+                            "prints a one-paragraph plain-English explanation. "
+                            "Opt-in only — sends template content off-device.")
+    _add_llm_flags(p_up2)
     p_up2.set_defaults(func=cmd_upgrade)
 
     p_lib = sub.add_parser("clause-library", help="Find repeated clauses across the vault")
@@ -2030,6 +2475,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Prompt to extract clusters into clauses/<category>/<slug>.md")
     p_lib.add_argument("--yes-extract-all", action="store_true",
                        help="With --extract, write every cluster without prompting")
+    p_lib.add_argument("--suggest-aliases", action="store_true",
+                       help="After clustering, suggest clause_aliases for "
+                            "clauses with similar bodies but different titles "
+                            "that aren't already aliased.")
     p_lib.set_defaults(func=cmd_clause_library)
 
     p_ask = sub.add_parser("ask", help="LLM-conversational template recommendation")
