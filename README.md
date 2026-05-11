@@ -4,17 +4,41 @@
 > Public sources (Common Paper, YC SAFE, Bonterms) and your own house templates,
 > in one searchable, composable, version-tracked vault. Stdlib-only Python. MIT.
 
-`template-vault-cli` treats clauses as first-class structural objects. You can
-fork a template, swap a single clause from another template into it, and later
-pull upstream parent improvements into your fork — with provenance recorded in
-`meta.json` rather than guessed by an LLM.
+**Why it's different from a folder of `.docx` files:** the CLI treats clauses
+as first-class structural objects with provenance. You can fork a template,
+swap a single clause from another template into it, and later pull upstream
+parent improvements into your fork — `meta.json` records which clauses came
+from where, so the merge is deterministic. An LLM can recommend
+compose/swap; the execution stays rule-based and reproducible without one.
 
+## Install
+
+```bash
+pipx install template-vault-cli                 # recommended
+# or
+pip install template-vault-cli                  # stdlib-only, no isolation
+pip install 'template-vault-cli[docx]'          # +.docx ingestion (python-docx)
 ```
-pip install template-vault-cli
+
+Python 3.9+. **No third-party runtime dependencies** in the default install —
+`[docx]` adds `python-docx` only when you want to upload `.docx` files.
+
+## 30-second first run
+
+Three commands, zero file authoring — fetches a real public template into a
+fresh vault:
+
+```bash
+mkdir my-vault && cd my-vault
 template-vault init
 template-vault import common-paper-mutual-nda
-template-vault upload my-house-mutual.md --category nda --name house-mutual
+template-vault list
 ```
+
+You should see one template registered under `nda/`. From there, `find`,
+`info`, `clauses`, `compose`, and `swap` all work against it. See the
+[end-to-end tour](#end-to-end-clause-aware-composition) below for the
+composition workflow.
 
 ## What it does
 
@@ -28,75 +52,63 @@ template-vault upload my-house-mutual.md --category nda --name house-mutual
 
 The CLI **structures** existing templates. It does **not generate** new clause text.
 
-## The clause-aware composition workflow
+## End-to-end: clause-aware composition
+
+A runnable transcript using inline file content so you can copy-paste the
+whole block into a fresh directory:
 
 ```bash
-# 1. Fork a parent template
-template-vault compose \
-    --base nda/house-mutual \
-    --as   nda/house-mutual-startup
+mkdir tour && cd tour
+template-vault init
 
-# 2. Swap one clause from another template
-template-vault swap nda/house-mutual-startup \
-    --clause "Term and Survival" \
-    --from   nda/yc-startup-friendly
+cat > house.md <<'EOF'
+# House NDA
 
-# 3. Compare clauses across templates before deciding
-template-vault compare-clauses nda/house-mutual nda/common-paper-mutual \
-    --clause "Residual Knowledge"
+## Purpose
+Evaluate a relationship.
 
-# 4. When the parent gets a new version, pull its improvements in.
-#    Clauses you locally swapped are preserved.
-template-vault upgrade nda/house-mutual-startup --accept-all
+## Term and Survival
+Two years from the Effective Date.
+EOF
 
-# 5. Find clauses that recur across the vault — candidates for extraction
-template-vault clause-library --threshold 0.85
+cat > yc.md <<'EOF'
+# YC NDA
+
+## Purpose
+Exploring.
+
+## Term and Survival
+One year from the Effective Date.
+EOF
+
+template-vault upload house.md --category nda --name house \
+    --summary "house mutual" --non-interactive
+template-vault upload yc.md    --category nda --name yc \
+    --summary "yc-style"    --non-interactive
+
+# Fork the house NDA and swap one clause from the YC one.
+template-vault compose --base nda/house --as nda/house-startup
+template-vault swap nda/house-startup --clause "Term and Survival" --from nda/yc
+template-vault info nda/house-startup
 ```
 
-Every swap appends to `clause_overrides` in `meta.json`, so you (and `upgrade`)
-always know which clauses came from where.
+`info` shows `clause_overrides: 1` with the entry `"Term and Survival" from
+nda/yc@v1` — that's the provenance. When `nda/house` later gets a `v2`,
+`template-vault upgrade nda/house-startup` pulls the parent's other clause
+changes in but leaves the locally-swapped Term clause alone. That's the
+whole point of recording the override.
 
-## Quick tour
+For a tour of the public-source pattern, do the same dance but use `import`
+instead of authoring files:
 
-A 30-second session in a fresh directory, captured verbatim from `make smoke`:
-
-```console
-$ template-vault init
-initialized vault at /tmp/tv-smoke
-
-$ template-vault upload house.md --category nda --name house --summary "house mutual" --non-interactive
-wrote nda/house@v1
-
-$ template-vault upload yc.md --category nda --name yc --summary "yc-style" --non-interactive
-wrote nda/yc@v1
-
-$ template-vault clauses nda/house
-- Purpose
-- Term and Survival
-
-$ template-vault compose --base nda/house --as nda/house-startup
-forked nda/house@v1 → nda/house-startup@v1
-
-$ template-vault swap nda/house-startup --clause "Term and Survival" --from nda/yc
-swapped "Term and Survival" from nda/yc@v1 → nda/house-startup
-nda/house-startup is now at v2
-
-$ template-vault info nda/house-startup
-nda/house-startup@v2  (latest)
-  derived_from:              nda/house@v1
-  forked_at_parent_version:  v1
-  clause_overrides:          1
-    - "Term and Survival"  ← nda/yc@v1  (2026-05-10)
-
-$ template-vault doctor
-1 categories, 3 templates, 4 versions — all good.
+```bash
+template-vault import common-paper-mutual-nda      # → nda/common-paper-mutual
+template-vault import common-paper-one-way-nda     # → nda/common-paper-one-way
+template-vault compare-clauses nda/common-paper-mutual nda/common-paper-one-way
 ```
 
-What happened: forked a house template, swapped one clause from another
-template into the fork, and `meta.json` recorded the provenance. If `nda/house`
-gets a `v2` later, `template-vault upgrade nda/house-startup` will pull the
-parent's other clause changes in but leave the swapped "Term and Survival"
-alone — that's the whole point of recording the override.
+Every swap appends to `clause_overrides` in `meta.json`. You — and `upgrade`
+— always know which clauses came from where.
 
 ## Command reference
 
@@ -181,19 +193,6 @@ full schema and the clause-detection regex.
 
 Future integration: `nda-review-cli draft --template-name <category>/<name>`
 will resolve via `template-vault get` if a vault is configured.
-
-## Install
-
-```bash
-pipx install template-vault-cli                 # recommended
-# or
-pip install template-vault-cli                  # stdlib-only
-pip install 'template-vault-cli[docx]'          # +.docx ingestion (python-docx)
-```
-
-Requires Python 3.9+. **No third-party runtime dependencies** in the default
-install — `[docx]` adds `python-docx` only when you want to upload `.docx`
-files.
 
 ## License
 
