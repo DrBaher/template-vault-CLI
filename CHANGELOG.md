@@ -4,7 +4,16 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
-## Unreleased
+## 0.3.0 — 2026-05-11
+
+Two-round capability lift: detection now handles non-Markdown templates
+(bold-numbered, ALL-CAPS, .docx), the alias system became cross-template
+and vault-wide, and `upgrade` / `compare-clauses` / `info` gained the
+guardrails downstream tools need.
+
+Out-of-scope deliberately: a review/negotiation engine. See
+[docs/ROADMAP.md](docs/ROADMAP.md) for a deferred plan to generalize the
+nda-review-cli prototype into this repo.
 
 ### Added — round 3 (capability lift)
 
