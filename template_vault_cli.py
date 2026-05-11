@@ -169,7 +169,7 @@ def read_vault_config(root: Path) -> Dict[str, Any]:
 
 
 def write_vault_config(root: Path, cfg: Dict[str, Any]) -> None:
-    (root / VAULT_CONFIG_FILENAME).write_text(_dump_json(cfg))
+    (root / VAULT_CONFIG_FILENAME).write_text(_dump_json(cfg), encoding="utf-8")
 
 
 def validate_vault_config(cfg: Dict[str, Any]) -> List[str]:
@@ -288,7 +288,7 @@ def _overlay_vault_defaults(meta: Dict[str, Any], cfg: Dict[str, Any]
 
 
 def save_meta(t_dir: Path, meta: Dict[str, Any]) -> None:
-    (t_dir / META_FILENAME).write_text(_dump_json(meta))
+    (t_dir / META_FILENAME).write_text(_dump_json(meta), encoding="utf-8")
 
 
 def validate_meta(meta: Dict[str, Any]) -> List[str]:
@@ -1036,7 +1036,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     summary = args.summary
     if not summary and not args.non_interactive:
         summary = _prompt(
-            "Summary (one or two sentences — used for LLM recall)",
+            "Summary (one or two sentences -- used for LLM recall)",
             default=meta.get("summary") or "",
         )
     if summary is not None:
@@ -1092,7 +1092,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     print(f"  file: {dest.relative_to(root)}")
     print(f"  meta: {(t_dir / META_FILENAME).relative_to(root)}")
     if not meta.get("summary"):
-        _eprint("note: summary is empty — `ask` recall will be weaker. "
+        _eprint("note: summary is empty -- `ask` recall will be weaker. "
                 "Re-upload with --summary or edit meta.json.")
     return 0
 
@@ -1297,7 +1297,7 @@ def cmd_clauses(args: argparse.Namespace) -> int:
     cat, name, version = parse_ref(args.ref)
     _f, _text, clauses, meta = _load_template_text_and_clauses(root, cat, name, version)
     if not clauses:
-        print(f"(no clauses detected in {cat}/{name}@{meta.get('latest_version')}) — "
+        print(f"(no clauses detected in {cat}/{name}@{meta.get('latest_version')}) -- "
               "templates use H2 (`## Heading`) for clause boundaries, or supply "
               "an explicit `clauses` map in meta.json.")
         return 0
@@ -1395,14 +1395,14 @@ def cmd_swap(args: argparse.Namespace) -> int:
     )
     src_clause = find_clause_by_title(src_clauses, args.clause)
     if src_clause is None:
-        avail = ", ".join(c["title"] for c in src_clauses) or "(none detected — H2 headers missing? See `clauses` map in meta.json.)"
+        avail = ", ".join(c["title"] for c in src_clauses) or "(none detected -- H2 headers missing? See `clauses` map in meta.json.)"
         raise VaultError(
             f"Clause {args.clause!r} not found in {src_cat}/{src_name}@{src_vid}. "
             f"Available: {avail}"
         )
     target_clause = find_clause_by_title(target_clauses, args.clause)
     if target_clause is None:
-        avail = ", ".join(c["title"] for c in target_clauses) or "(none detected — H2 headers missing? See `clauses` map in meta.json.)"
+        avail = ", ".join(c["title"] for c in target_clauses) or "(none detected -- H2 headers missing? See `clauses` map in meta.json.)"
         raise VaultError(
             f"Clause {args.clause!r} not present in target {target_cat}/{target_name}. "
             f"Available: {avail}"
@@ -1609,7 +1609,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     new_text = derived_text
     dry_run = getattr(args, "dry_run", False)
     if dry_run:
-        print(f"(dry-run: showing changes from {p_cat}/{p_name}@{parent_v_at_fork} → {parent_latest}; nothing will be written)")
+        print(f"(dry-run: showing changes from {p_cat}/{p_name}@{parent_v_at_fork} -> {parent_latest}; nothing will be written)")
     # Re-detect each iteration since indices shift after replacement
     for title_lc in sorted(set(fork_idx) & set(latest_idx)):
         fb = slice_clause_text(fork_text, fork_idx[title_lc])
@@ -1796,7 +1796,7 @@ def _suggest_aliases(per_template: List[Tuple[str, str, str, List[Dict[str, Any]
         print("\n(no alias suggestions; no near-miss bodies with different titles)")
         return
 
-    print(f"\nAlias suggestions (sim ≥ {threshold:.2f}, different titles, "
+    print(f"\nAlias suggestions (sim >= {threshold:.2f}, different titles, "
           f"not already aliased):")
     sorted_pairs = sorted(suggestions.items(),
                           key=lambda kv: (-len(kv[1]), -max(s["ratio"] for s in kv[1])))
@@ -1805,10 +1805,10 @@ def _suggest_aliases(per_template: List[Tuple[str, str, str, List[Dict[str, Any]
         b_raw = entries[0]["b_raw"]
         max_r = max(s["ratio"] for s in entries)
         labels = sorted({s["a_label"] for s in entries} | {s["b_label"] for s in entries})
-        print(f"  - {a_raw!r}  ↔  {b_raw!r}   (best sim={max_r:.2f}, "
+        print(f"  - {a_raw!r}  <->  {b_raw!r}   (best sim={max_r:.2f}, "
               f"in {len(labels)} template(s))")
         for lab in labels:
-            print(f"      · {lab}")
+            print(f"      - {lab}")
     print("\nTo accept a suggestion, add to the canonical template's meta.json:")
     print('  "clause_aliases": { "<canonical title>": ["<alternate title>"] }')
 
@@ -1885,9 +1885,9 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
             print(f"- {c['title']}  (n={len(c['members'])}, mean_similarity={c['mean_r']:.2f})")
             for ref, ver, member_title in c["members"]:
                 if member_title.lower() != c["title"].lower():
-                    print(f"    · {ref}@{ver}  (as {member_title!r})")
+                    print(f"    - {ref}@{ver}  (as {member_title!r})")
                 else:
-                    print(f"    · {ref}@{ver}")
+                    print(f"    - {ref}@{ver}")
     else:
         print(f"(no clusters above threshold {threshold:.2f})")
 
@@ -2121,7 +2121,7 @@ def _execute_llm_commands(llm_text: str, *, interactive: bool,
             return 0
     for argv in cmds:
         rendered = "template-vault " + " ".join(shlex.quote(a) for a in argv)
-        print(f"\n→ {rendered}")
+        print(f"\n=> {rendered}")
         rc = main(argv)
         if rc != 0:
             _eprint(f"command failed (exit {rc}); stopping the chain")
@@ -2548,6 +2548,15 @@ _FIRST_RUN_HINT = (
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # POSIX/C locale (default on some macOS CI runners) leaves stdout/stderr
+    # in ASCII mode; printing any non-ASCII char raises UnicodeEncodeError.
+    # Force UTF-8 so the CLI works regardless of LANG/LC_ALL.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         sys.stdout.write(_FIRST_RUN_HINT)
