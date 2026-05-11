@@ -81,7 +81,9 @@ class VaultDiscoveryTests(unittest.TestCase):
         with temp_vault() as v:
             sub = v / "nested" / "deeper"
             sub.mkdir(parents=True)
-            self.assertEqual(tvc.find_vault_root(sub), v)
+            # find_vault_root resolves symlinks (e.g. /var -> /private/var on
+            # macOS), so compare against the resolved fixture path.
+            self.assertEqual(tvc.find_vault_root(sub), v.resolve())
 
     def test_find_vault_root_raises_when_missing(self):
         with self.assertRaises(tvc.NotFoundError):
