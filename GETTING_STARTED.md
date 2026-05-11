@@ -3,6 +3,16 @@
 Five small scenarios that cover the way real teams adopt `template-vault-cli`.
 Run them top-to-bottom or skip to the one that matches your situation.
 
+If you haven't yet, install the CLI first:
+
+```bash
+pipx install template-vault-cli                 # recommended
+# or `pip install template-vault-cli`, or `pip install 'template-vault-cli[docx]'`
+```
+
+See the [README](README.md#install) for the install variants. Everything below
+assumes `template-vault --version` works.
+
 ---
 
 ## 1. Solo founder seeding from public sources
