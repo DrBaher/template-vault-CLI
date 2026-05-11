@@ -4,6 +4,57 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.0 — 2026-05-11
+
+Distribution + ergonomics + tooling round. Closes the install loop
+(PyPI), adds four new commands, and brings the CLI in line with the
+sibling-suite conventions (`--why`, color, completion).
+
+### Added
+- **PyPI publish workflow** (`.github/workflows/publish.yml`). Runs on
+  `git tag v*` push and uses PyPI Trusted Publishing (no token in
+  secrets). One-time setup: configure the project at
+  https://pypi.org/manage/account/publishing/ pointing at this repo +
+  the `publish.yml` workflow + an environment named `pypi`. After
+  that, every `v*.*.*` tag publishes automatically.
+- **`template-vault find --json`** — structured search results for
+  programmatic consumers. Same shape pattern as `info --json` and
+  `ask --json`.
+- **`template-vault history <ref>`** — friendly chronological
+  timeline of versions, swaps, and amends. `--json` for structured
+  output.
+- **`template-vault verify`** — content-level sha256 integrity check
+  beyond what `doctor` does. Walks every template, computes the hash
+  of each version file, compares against the recorded `sha256` on
+  the version entry. `--update-hashes` populates missing hashes on
+  first adoption. `--strict` treats missing-hash as failure.
+- **`template-vault export <ref> --as docx`** — round-trip the .docx
+  ingestion. Markdown `#`/`##`/... become Word's `Title`/`Heading 2`/...
+  Requires the `[docx]` extra.
+- **`--why` flag** on `compose`, `swap`, `upgrade`, `import`, `export`.
+  Prints a short structured explanation of what the command did
+  (resolved clauses, files touched, meta fields updated). Mirrors the
+  `--why` pattern in sibling CLIs.
+- **`template-vault completion bash | zsh`** — emit a shell completion
+  script for tab-completing subcommands. Hand-rolled, no extra
+  dependency. Install with `template-vault completion bash >> ~/.bashrc`.
+
+### Changed
+- **Color-aware output**: success/error/warn prefixes (`Created:`,
+  `Imported:`, `Composed:`, `Swapped`, `error:`, `note:`) now print
+  green/red/yellow when stdout is a TTY. Honors the
+  [NO_COLOR convention](https://no-color.org/) for opt-out and
+  `FORCE_COLOR` for opt-in. Auto-disables when piping.
+- "No such template" error now appends a one-line hint to run
+  `template-vault list`.
+
+### Notes
+- Test suite: 147 → **164** (+17). Coverage 81% → **83%**.
+- The `verify` command introduces a new optional `sha256` field on
+  per-version entries in `meta.json`. Backwards compatible: existing
+  vaults without recorded hashes work fine; `verify --update-hashes`
+  populates them in one shot.
+
 ## 0.3.0 — 2026-05-11
 
 Two-round capability lift: detection now handles non-Markdown templates
