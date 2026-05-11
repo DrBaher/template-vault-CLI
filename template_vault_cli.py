@@ -39,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -129,8 +129,45 @@ class NotFoundError(VaultError):
 # ---------------------------------------------------------------------------
 
 
+def _color_enabled(stream: Any = None) -> bool:
+    """Auto-detect color support: opt out via NO_COLOR
+    (https://no-color.org/), and never emit codes when stdout isn't a tty."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    s = stream if stream is not None else sys.stdout
+    try:
+        return bool(s.isatty())
+    except Exception:
+        return False
+
+
+def _c(text: str, code: str) -> str:
+    if not _color_enabled():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _green(s: str) -> str: return _c(s, "32")
+def _yellow(s: str) -> str: return _c(s, "33")
+def _red(s: str) -> str: return _c(s, "31")
+def _dim(s: str) -> str: return _c(s, "2")
+
+
 def _eprint(*args: Any, **kwargs: Any) -> None:
     print(*args, file=sys.stderr, **kwargs)
+
+
+def _why_print(args_ns: argparse.Namespace, header: str, *lines: str) -> None:
+    """Emit a `--why` block explaining what the command actually did.
+    No-op unless `--why` was passed. Block goes to stdout so it's
+    pipe-able with the command's primary output."""
+    if not getattr(args_ns, "why", False):
+        return
+    print(f"\n[why] {header}")
+    for line in lines:
+        print(f"  {line}")
 
 
 def _now_iso() -> str:
@@ -917,6 +954,66 @@ def _docx_to_markdown(src: Path) -> str:
     return md
 
 
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _markdown_to_docx(text: str, dest: Path) -> None:
+    """Round-trip the .docx ingestion: convert a Markdown body back to .docx
+    using `Heading 1`/`Heading 2`/... styles. Each line starting with `#` is
+    a heading at the corresponding level. Blank lines preserved. All other
+    lines become body paragraphs. Lazily imports python-docx."""
+    try:
+        import docx as _docx  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise VaultError(
+            "Exporting to .docx requires the optional [docx] extra. "
+            "Install with: pip install template-vault-cli[docx]"
+        ) from e
+    document = _docx.Document()
+    for line in text.splitlines():
+        if not line.strip():
+            document.add_paragraph("")
+            continue
+        m = _MARKDOWN_HEADING_RE.match(line)
+        if m:
+            level = min(6, len(m.group(1)))
+            title = m.group(2)
+            style = "Title" if level == 1 else f"Heading {level}"
+            document.add_paragraph(title, style=style)
+        else:
+            document.add_paragraph(line)
+    document.save(str(dest))
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    root = find_vault_root()
+    cat, name, version = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
+    meta = load_meta_resolved(t_dir)
+    f = resolve_version_file(t_dir, meta, version)
+    text = f.read_text(encoding="utf-8")
+    fmt = (args.as_ or "").lower()
+    if fmt != "docx":
+        raise VaultError(f"Unsupported export format: {args.as_!r}. Only 'docx' is supported.")
+    dest = Path(args.output) if args.output else Path(f"{name}.docx")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _markdown_to_docx(text, dest)
+    print(f"{_green('Exported')} {cat}/{name}@{meta.get('latest_version')} -> {dest}")
+    _why_print(
+        args,
+        f"source: {f.relative_to(root)}",
+        f"format: {fmt}",
+        f"output: {dest}",
+        f"headings: lines starting with '#' become Heading 1/2/3/... (H1 -> Title)",
+    )
+    return 0
+
+
 def cmd_upload(args: argparse.Namespace) -> int:
     root = find_vault_root()
     src = Path(args.file).resolve()
@@ -1088,11 +1185,11 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
     save_meta(t_dir, meta)
 
-    print(f"{'Created' if new else 'Updated'}: {category}/{name}@{vid}")
+    print(f"{_green('Created:') if new else _green('Updated:')} {category}/{name}@{vid}")
     print(f"  file: {dest.relative_to(root)}")
     print(f"  meta: {(t_dir / META_FILENAME).relative_to(root)}")
     if not meta.get("summary"):
-        _eprint("note: summary is empty -- `ask` recall will be weaker. "
+        _eprint(_yellow("note:") + " summary is empty -- `ask` recall will be weaker. "
                 "Re-upload with --summary or edit meta.json.")
     return 0
 
@@ -1134,7 +1231,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_find(args: argparse.Namespace) -> int:
     root = find_vault_root()
     q = args.query.lower()
-    hits: List[Tuple[float, str, str, str]] = []
+    hits: List[Tuple[float, str, str, str, Dict[str, Any]]] = []
     for cat, name, _path, meta in iter_templates(root):
         haystack_parts = [
             cat, name,
@@ -1150,12 +1247,31 @@ def cmd_find(args: argparse.Namespace) -> int:
         else:
             score = difflib.SequenceMatcher(None, q, haystack).ratio()
         if score >= 0.3:
-            hits.append((score, cat, name, meta.get("latest_version") or "?"))
-    hits.sort(reverse=True)
+            hits.append((score, cat, name, meta.get("latest_version") or "?", meta))
+    hits.sort(reverse=True, key=lambda t: (t[0], t[1], t[2]))
+    hits = hits[: args.top_k]
+    if getattr(args, "json", False):
+        payload = {
+            "query": args.query,
+            "results": [
+                {
+                    "ref": f"{cat}/{name}",
+                    "latest_version": ver,
+                    "score": round(score, 4),
+                    "summary": meta.get("summary") or "",
+                    "tags": list(meta.get("tags") or []),
+                    "jurisdiction": list(meta.get("jurisdiction") or []),
+                }
+                for score, cat, name, ver, meta in hits
+            ],
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
     if not hits:
         print(f"(no matches for {args.query!r})")
         return 0
-    for score, cat, name, ver in hits[: args.top_k]:
+    for score, cat, name, ver, _meta in hits:
         print(f"{cat}/{name}@{ver}    score={score:.2f}")
     return 0
 
@@ -1165,7 +1281,10 @@ def cmd_get(args: argparse.Namespace) -> int:
     cat, name, version = parse_ref(args.ref)
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
-        raise NotFoundError(f"No such template: {cat}/{name}")
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
     meta = load_meta(t_dir)
     f = resolve_version_file(t_dir, meta, version)
     # Bump usage stats (best-effort; don't crash if read-only)
@@ -1187,7 +1306,10 @@ def cmd_info(args: argparse.Namespace) -> int:
     cat, name, _v = parse_ref(args.ref)
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
-        raise NotFoundError(f"No such template: {cat}/{name}")
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
     meta = load_meta_resolved(t_dir)
     if getattr(args, "json", False):
         # Structured payload for downstream tools (e.g. nda-review-cli).
@@ -1251,6 +1373,70 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_history(args: argparse.Namespace) -> int:
+    """Friendly version timeline for one template. Synthesizes meta.json's
+    versions[] + clause_overrides[] into a single chronological view."""
+    root = find_vault_root()
+    cat, name, _ = parse_ref(args.ref)
+    t_dir = template_dir(root, cat, name)
+    if not t_dir.exists():
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
+    meta = load_meta_resolved(t_dir)
+    versions = list(meta.get("versions") or [])
+    overrides = list(meta.get("clause_overrides") or [])
+    # Merge into an event list, sorted by (date, kind-priority).
+    events: List[Tuple[str, str, Dict[str, Any]]] = []
+    for v in versions:
+        when = v.get("added") or "?"
+        events.append((when, "version", v))
+    for o in overrides:
+        when = (o.get("swapped_at") or "").split("T", 1)[0] or "?"
+        events.append((when, "swap", o))
+    # Sort: by date asc; within same date, versions before swaps.
+    kind_order = {"version": 0, "swap": 1}
+    events.sort(key=lambda e: (e[0], kind_order.get(e[1], 9)))
+
+    if getattr(args, "json", False):
+        payload = {
+            "ref": f"{cat}/{name}",
+            "latest_version": meta.get("latest_version"),
+            "derived_from": meta.get("derived_from"),
+            "forked_at_parent_version": meta.get("forked_at_parent_version"),
+            "events": [
+                {"date": when, "kind": kind, **data}
+                for when, kind, data in events
+            ],
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    print(f"{cat}/{name}  (latest: {meta.get('latest_version')})")
+    if meta.get("derived_from"):
+        print(f"  forked from {meta['derived_from']} "
+              f"at parent {meta.get('forked_at_parent_version') or '?'}")
+    if not events:
+        print("  (no history)")
+        return 0
+    for when, kind, data in events:
+        if kind == "version":
+            vid = data.get("id")
+            sup = data.get("supersedes")
+            cl = data.get("changelog") or ""
+            tag = "[amended]" if data.get("amended") else ""
+            arrow = f" (supersedes {sup})" if sup else ""
+            print(f"  {when}  {vid}{arrow} {tag}")
+            if cl:
+                print(f"             - {cl}")
+        elif kind == "swap":
+            print(f"  {when}  swap   '{data.get('clause_title')}' from "
+                  f"{data.get('source_template')}@{data.get('source_version')}")
+    return 0
+
+
 def cmd_diff(args: argparse.Namespace) -> int:
     root = find_vault_root()
     cat, name, _v = parse_ref(args.ref)
@@ -1278,7 +1464,10 @@ def _load_template_text_and_clauses(root: Path, cat: str, name: str,
                                     ) -> Tuple[Path, str, List[Dict[str, Any]], Dict[str, Any]]:
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
-        raise NotFoundError(f"No such template: {cat}/{name}")
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
     meta = load_meta_resolved(t_dir)
     f = resolve_version_file(t_dir, meta, version)
     text = f.read_text()
@@ -1355,7 +1544,16 @@ def cmd_compose(args: argparse.Namespace) -> int:
     new_meta["clause_overrides"] = []
     new_meta["license"] = base_meta.get("license", "private")
     save_meta(new_dir, new_meta)
-    print(f"Composed: {new_cat}/{new_name}@v1  (forked from {base_cat}/{base_name}@{base_vid})")
+    print(f"{_green('Composed:')} {new_cat}/{new_name}@v1  (forked from {base_cat}/{base_name}@{base_vid})")
+    _why_print(
+        args,
+        f"forked {base_cat}/{base_name}@{base_vid} into {new_cat}/{new_name}@v1",
+        f"copied file: {base_file.name} -> {new_file.relative_to(root)}",
+        f"meta.derived_from set to: {new_meta['derived_from']}",
+        f"meta.forked_at_parent_version set to: {new_meta['forked_at_parent_version']}",
+        f"inherited fields: jurisdiction, party_type, deal_type, tags, license",
+        f"clause_overrides starts empty (any future swap will append here)",
+    )
     return 0
 
 
@@ -1425,8 +1623,17 @@ def cmd_swap(args: argparse.Namespace) -> int:
     target_meta["clause_overrides"] = overrides
     save_meta(target_dir, target_meta)
 
-    print(f"Swapped clause {args.clause!r} in {target_cat}/{target_name} "
+    print(f"{_green('Swapped')} clause {args.clause!r} in {target_cat}/{target_name} "
           f"from {src_cat}/{src_name}@{src_vid}.")
+    _why_print(
+        args,
+        f"resolved source clause: {src_clause['title']!r} (anchor: {src_clause['anchor']!r})",
+        f"resolved target clause: {target_clause['title']!r} (anchor: {target_clause['anchor']!r})",
+        f"target H2 header preserved (so numbering stays intact)",
+        f"replaced body region: chars {target_clause['start']}..{target_clause['end']}",
+        f"meta.clause_overrides now has {len(overrides)} entry(ies)",
+        f"target file rewritten in place: {target_file.relative_to(root)}",
+    )
     return 0
 
 
@@ -1561,7 +1768,10 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     cat, name, _ = parse_ref(args.ref)
     t_dir = template_dir(root, cat, name)
     if not t_dir.exists():
-        raise NotFoundError(f"No such template: {cat}/{name}")
+        raise NotFoundError(
+            f"No such template: {cat}/{name}. "
+            f"Run `template-vault list` to see what's in the vault."
+        )
     meta = load_meta(t_dir)
     parent_ref = meta.get("derived_from")
     parent_v_at_fork = meta.get("forked_at_parent_version")
@@ -1708,7 +1918,15 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     meta["latest_version"] = next_vid
     meta["forked_at_parent_version"] = parent_latest
     save_meta(t_dir, meta)
-    print(f"Wrote {cat}/{name}@{next_vid}: accepted={accepted}, skipped_overridden={skipped_overridden}.")
+    print(f"{_green('Wrote')} {cat}/{name}@{next_vid}: accepted={accepted}, skipped_overridden={skipped_overridden}.")
+    _why_print(
+        args,
+        f"parent: {p_cat}/{p_name} moved {parent_v_at_fork} -> {parent_latest}",
+        f"per-clause merge: {accepted} accepted, {skipped_overridden} skipped (locally swapped)",
+        f"new derived version: {next_vid}; file written: {new_file.relative_to(root)}",
+        f"meta.forked_at_parent_version now: {parent_latest}",
+        f"locally-swapped clauses (in clause_overrides) were NOT touched",
+    )
     return 0
 
 
@@ -2225,9 +2443,17 @@ def cmd_import(args: argparse.Namespace) -> int:
     incoming_tags = set(src.get("tags") or [])
     meta["tags"] = sorted(set(meta.get("tags") or []) | incoming_tags)
     save_meta(t_dir, meta)
-    print(f"{'Imported' if new else 'Updated'}: {cat}/{name}@{vid}  (license: {src.get('license')})")
+    print(f"{_green('Imported:') if new else _green('Updated:')} {cat}/{name}@{vid}  (license: {src.get('license')})")
     if src.get("attribution"):
         print(f"  attribution required: {src['attribution']}")
+    _why_print(
+        args,
+        f"fetched: {url}",
+        f"sha256 (observed): {actual_hash}",
+        f"sha256 (expected): {expected_hash or '(none -- no pin in registry)'}",
+        f"license recorded: {src.get('license')}",
+        f"written to: {dest.relative_to(root)}",
+    )
     return 0
 
 
@@ -2263,6 +2489,144 @@ def cmd_publish(_args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Command: doctor
 # ---------------------------------------------------------------------------
+
+
+_BASH_COMPLETION = r"""# template-vault bash completion
+# Install:
+#   template-vault completion bash >> ~/.bashrc
+# or for one shell only:
+#   eval "$(template-vault completion bash)"
+
+_template_vault_completions() {
+    local cur prev cmds
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    cmds="init upload list find get info diff clauses compose swap compare-clauses upgrade clause-library ask sources import sync publish doctor verify history export completion"
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
+        return 0
+    fi
+}
+complete -F _template_vault_completions template-vault
+"""
+
+_ZSH_COMPLETION = r"""# template-vault zsh completion
+# Install:
+#   template-vault completion zsh >> ~/.zshrc
+# Make sure compinit is loaded earlier in your zshrc.
+
+_template_vault() {
+    local -a cmds
+    cmds=(
+        'init:Initialize a vault in the current dir'
+        'upload:Add a template version to the vault'
+        'list:List templates'
+        'find:Keyword search across metadata'
+        'get:Print a template (or its path with --path-only)'
+        'info:Show metadata for a template'
+        'diff:Unified diff between two versions'
+        'clauses:List clauses detected in a template'
+        'compose:Fork a template into a new derived one'
+        'swap:Replace one clause from another template'
+        'compare-clauses:Compare clauses between two templates'
+        'upgrade:Pull parent-template changes into a derived template'
+        'clause-library:Find repeated clauses across the vault'
+        'ask:LLM-conversational template recommendation'
+        'sources:List bundled public-source registry entries'
+        'import:Import a template from a configured public source'
+        'sync:git pull (thin wrapper)'
+        'publish:git push (thin wrapper)'
+        'doctor:Vault integrity check'
+        'verify:Content-level sha256 integrity check'
+        'history:Chronological timeline'
+        'export:Export a template to another format'
+        'completion:Emit a shell completion script'
+    )
+    if (( CURRENT == 2 )); then
+        _describe 'subcommand' cmds
+    fi
+}
+compdef _template_vault template-vault
+"""
+
+
+def cmd_completion(args: argparse.Namespace) -> int:
+    shell = (args.shell or "").lower()
+    if shell == "bash":
+        sys.stdout.write(_BASH_COMPLETION)
+        return 0
+    if shell == "zsh":
+        sys.stdout.write(_ZSH_COMPLETION)
+        return 0
+    raise VaultError(
+        f"Unsupported shell: {args.shell!r}. Supported: bash, zsh."
+    )
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Content-level integrity check. Walks every template/version, computes
+    sha256 of the file on disk, and compares against any `sha256` recorded
+    on the version entry. With --update-hashes, populates missing hashes and
+    saves meta.json (useful one-shot when adopting verify on an existing
+    vault). With --strict, reports missing hashes as failures."""
+    root = find_vault_root()
+    updated = 0
+    mismatched = 0
+    missing = 0
+    checked = 0
+    for cat, name, t_dir, meta in iter_templates(root):
+        meta_changed = False
+        for v in (meta.get("versions") or []):
+            vid = v.get("id")
+            if not vid:
+                continue
+            files = sorted(p for p in t_dir.glob(f"{vid}.*") if p.is_file())
+            if not files:
+                print(f"  {cat}/{name}@{vid}: file missing on disk")
+                mismatched += 1
+                continue
+            path = files[0]
+            actual = sha256_bytes(path.read_bytes())
+            recorded = v.get("sha256")
+            checked += 1
+            if recorded is None:
+                if args.update_hashes:
+                    v["sha256"] = actual
+                    meta_changed = True
+                    updated += 1
+                    print(f"  {cat}/{name}@{vid}: recorded sha256={actual[:12]}...")
+                else:
+                    if args.strict:
+                        print(f"  {cat}/{name}@{vid}: NO HASH (strict)")
+                        mismatched += 1
+                    else:
+                        missing += 1
+                continue
+            if recorded != actual:
+                print(f"  {cat}/{name}@{vid}: MISMATCH")
+                print(f"      recorded: {recorded}")
+                print(f"      actual:   {actual}")
+                mismatched += 1
+        if meta_changed:
+            # Save the per-template raw meta, not the resolved one.
+            raw = load_meta(t_dir)
+            recorded_ids = {v.get("id"): v.get("sha256") for v in (meta.get("versions") or [])}
+            for v in (raw.get("versions") or []):
+                vid = v.get("id")
+                if vid and recorded_ids.get(vid) and not v.get("sha256"):
+                    v["sha256"] = recorded_ids[vid]
+            save_meta(t_dir, raw)
+
+    summary = (
+        f"checked {checked} file(s); "
+        f"mismatched {mismatched}; "
+        f"missing-hash {missing}"
+    )
+    if args.update_hashes:
+        summary += f"; updated {updated}"
+    print(summary)
+    return 1 if mismatched else 0
 
 
 def cmd_doctor(_args: argparse.Namespace) -> int:
@@ -2356,6 +2720,13 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _add_why_flag(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--why", action="store_true",
+                   help="Print a short structured explanation of what this "
+                        "command did (and didn't do). Useful for agents and "
+                        "for debugging.")
+
+
 def _add_llm_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm", help="LLM provider override (anthropic|openai)")
     p.add_argument("--llm-model", help="LLM model override")
@@ -2414,6 +2785,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_find = sub.add_parser("find", help="Keyword search across metadata")
     p_find.add_argument("query")
     p_find.add_argument("--top-k", type=int, default=10)
+    p_find.add_argument("--json", action="store_true",
+                        help="Emit a structured JSON payload (query, results[])")
     p_find.set_defaults(func=cmd_find)
 
     p_get = sub.add_parser("get", help="Print a template (or its path with --path-only)")
@@ -2433,17 +2806,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("version_b")
     p_diff.set_defaults(func=cmd_diff)
 
+    p_hist = sub.add_parser("history", help="Chronological timeline: versions + swaps + amends")
+    p_hist.add_argument("ref")
+    p_hist.add_argument("--json", action="store_true",
+                        help="Emit a structured JSON payload of the timeline")
+    p_hist.set_defaults(func=cmd_history)
+
     p_clauses = sub.add_parser("clauses", help="List clauses detected in a template")
     p_clauses.add_argument("ref")
     p_clauses.set_defaults(func=cmd_clauses)
 
     p_compose = sub.add_parser("compose", help="Fork a template into a new derived one")
+    _add_why_flag(p_compose)
     p_compose.add_argument("--base", required=True, help="category/name[@version]")
     p_compose.add_argument("--as", dest="as_ref", required=True,
                            help="category/new-name for the derived template")
     p_compose.set_defaults(func=cmd_compose)
 
     p_swap = sub.add_parser("swap", help="Replace one clause from another template")
+    _add_why_flag(p_swap)
     p_swap.add_argument("target", help="category/name (the template to mutate)")
     p_swap.add_argument("--clause", required=True, help="Clause title (case-insensitive)")
     p_swap.add_argument("--from", dest="from_ref", required=True,
@@ -2457,6 +2838,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cmp.set_defaults(func=cmd_compare_clauses)
 
     p_up2 = sub.add_parser("upgrade", help="Pull parent-template changes into a derived template")
+    _add_why_flag(p_up2)
     p_up2.add_argument("ref")
     p_up2.add_argument("--accept-all", action="store_true")
     p_up2.add_argument("--dry-run", action="store_true",
@@ -2502,6 +2884,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.set_defaults(func=cmd_ask)
 
     p_imp = sub.add_parser("import", help="Import a template from a configured public source")
+    _add_why_flag(p_imp)
     p_imp.add_argument("source_id")
     p_imp.add_argument("--no-verify", action="store_true",
                        help="Skip hash verification (not recommended)")
@@ -2525,6 +2908,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_doc = sub.add_parser("doctor", help="Vault integrity check")
     p_doc.set_defaults(func=cmd_doctor)
+
+    p_comp = sub.add_parser("completion", help="Emit a shell completion script (bash or zsh)")
+    p_comp.add_argument("shell", choices=["bash", "zsh"], help="Target shell")
+    p_comp.set_defaults(func=cmd_completion)
+
+    p_exp = sub.add_parser("export", help="Export a template to another format (e.g. .docx)")
+    p_exp.add_argument("ref")
+    p_exp.add_argument("--as", dest="as_", default="docx",
+                       help="Output format (currently only 'docx')")
+    p_exp.add_argument("--output", help="Output path (default: <name>.docx in cwd)")
+    _add_why_flag(p_exp)
+    p_exp.set_defaults(func=cmd_export)
+
+    p_ver = sub.add_parser("verify", help="Content-level sha256 integrity check")
+    p_ver.add_argument("--update-hashes", action="store_true",
+                       help="Populate missing sha256 entries on version objects "
+                            "and save meta.json. Useful one-shot when adopting "
+                            "verify on an existing vault.")
+    p_ver.add_argument("--strict", action="store_true",
+                       help="Treat missing sha256 records as failures (exit 1)")
+    p_ver.set_defaults(func=cmd_verify)
 
     return p
 
@@ -2569,7 +2973,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return args.func(args) or 0
     except VaultError as e:
-        _eprint(f"error: {e}")
+        _eprint(_red("error:") + f" {e}")
         return 2
     except KeyboardInterrupt:
         _eprint("interrupted")
