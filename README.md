@@ -120,11 +120,14 @@ template-vault upload <file>
     [--tags a,b] [--jurisdiction "California,Delaware"]
     [--license MIT] [--llm-summarize]
     [--amend v3 [--yes-amend]]                      # overwrite a version in place
-template-vault list   [--category nda] [--tag house-style] [--jurisdiction California]
-template-vault find   "<keyword>"
-template-vault get    <category>/<name>[@version] [--path-only]
-template-vault info   <category>/<name> [--json]    # --json for scripts
-template-vault diff   <category>/<name> <version-a> <version-b>
+template-vault list    [--category nda] [--tag house-style] [--jurisdiction California]
+template-vault find    "<keyword>" [--top-k 10] [--json]
+template-vault get     <category>/<name>[@version] [--path-only]
+template-vault info    <category>/<name> [--json]   # --json for scripts
+template-vault diff    <category>/<name> <version-a> <version-b>
+template-vault history <category>/<name> [--json]   # versions + swaps + amends timeline
+template-vault export  <category>/<name> --as docx [--output PATH]   # needs [docx] extra
+template-vault verify  [--update-hashes] [--strict]  # content-level sha256 check
 
 # Clause-aware composition
 template-vault clauses          <category>/<name>
@@ -146,8 +149,14 @@ template-vault import <source-id> [--no-verify | --pin-hash] [--sources …]
 # Sync + housekeeping
 template-vault sync          # git pull
 template-vault publish       # git push
-template-vault doctor        # vault integrity check
+template-vault doctor        # vault integrity check (schema-level)
+template-vault completion bash | zsh    # emit shell completion script
 ```
+
+Most write-side commands (`compose`, `swap`, `upgrade`, `import`, `export`)
+accept `--why` for a short structured explanation of what they did. Color
+output auto-detects TTY; honors the [NO_COLOR](https://no-color.org/)
+convention.
 
 ## Privacy posture
 
