@@ -137,6 +137,26 @@ This is what makes `.docx` → Markdown templates work after `upload`'s
 heading-style conversion: the converter emits `## Heading 2` style for
 non-`Heading 1` paragraphs, and H2 detection takes over.
 
+### Cross-repo spec
+
+The H2 / bold-prefix / ALL-CAPS / synthetic cascade is also implemented
+in [compare-cli](https://github.com/DrBaher/compare-cli) (Node, for
+clause-level drift comparison between two contract versions). compare-cli
+v0.1.1 extracted the rule as a portable language-agnostic spec:
+
+> [DrBaher/compare-cli/docs/clause-detection.md](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)
+> (rule v1.0)
+
+The two implementations are **close but not byte-identical** — for
+example, this repo requires ALL-CAPS lines be surrounded by blank lines
+and have ≥ 4 chars; compare-cli's spec allows ≥ 3 chars and doesn't
+require the blank-line frame. Reconciliation (picking one rule and
+bumping both implementations + the spec version in lockstep) is tracked
+as **future work**; no migration is forced by this citation.
+
+The shared posture — H2 > bold-prefix > ALL-CAPS > synthetic, strict
+cascade, normalized titles — is what both implementations guarantee.
+
 ### Title normalization
 
 For matching by title (in `swap`, `compare-clauses`, `upgrade`), titles are
