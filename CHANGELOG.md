@@ -4,8 +4,7 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
-## Unreleased
-
+## 0.4.5 — 2026-05-19
 ### Added
 - **Smart shell completion.** Bash and zsh scripts now call back into
   the CLI via a hidden `template-vault __complete` handler. Tab-complete
