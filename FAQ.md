@@ -77,10 +77,97 @@ The shorter version: an LLM can recommend a swap; only the CLI can record
 The vault stores any extension. `upload my.docx --category msa --name x`
 writes `msa/x/v1.docx`. But the **clause-aware** features (`clauses`,
 `compose`, `swap`, `compare-clauses`, `upgrade`, `clause-library`) read
-H2 headers from a text file. If your templates are `.docx`, you'll want to
-keep a `.md` companion (or convert via `docx2pdf-cli` and back) for the
-clause primitives. Other commands (`upload`, `list`, `find`, `get`, `diff`,
+H2 headers from a text file. The recommended path: install the `[docx]`
+extra (`pip install 'template-vault-cli[docx]'`) and `upload my.docx`
+will convert it to Markdown on the way in, preserving `Heading 1` /
+`Heading 2` styles as `#` / `##`. The reverse direction works too:
+`template-vault export <ref> --as docx` converts a Markdown template
+back to Word format. Other commands (`list`, `find`, `get`, `diff`,
 `info`, `import`, `sync`, `publish`, `doctor`) work on any extension.
+
+## How do I migrate from a folder of `.docx` files?
+
+Three steps. Assume the files live at `~/legal-drive-export/`:
+
+```bash
+mkdir my-vault && cd my-vault
+template-vault init
+
+# Install the docx extra (needed for the .docx -> Markdown conversion at upload).
+pip install 'template-vault-cli[docx]'
+
+# Bulk upload. Categories come from the source folder structure; you'll
+# also want to add summaries for `find`/`ask` recall.
+for f in ~/legal-drive-export/nda/*.docx; do
+  name=$(basename "$f" .docx)
+  template-vault upload "$f" --category nda --name "$name" \
+      --summary "imported from drive on $(date +%F)" --non-interactive
+done
+
+# Surface the templates that came in without recognized clause structure,
+# empty summaries, or missing hashes -- doctor groups all of this into
+# "Quality warnings".
+template-vault doctor
+
+# Lock content with sha256 so subsequent edits are detectable.
+template-vault verify --update-hashes
+
+# Commit + push (the vault is a git repo).
+git add . && git commit -m "seed from drive export"
+template-vault publish     # = git push
+```
+
+If the `.docx` headings aren't structured (no `Heading 1` / `Heading 2`
+styles in Word), the bold-numbered and ALL-CAPS fallback detection in
+`detect_clauses` will still try; failing that, you can hand-write an
+explicit `clauses` map in each `meta.json` (see ARCHITECTURE.md).
+`template-vault doctor` flags exactly which templates need it.
+
+## Can I use it offline?
+
+Yes for everything except `import` and `ask`. After `init`, the vault
+is just a Git repo of files on your disk; there's nothing to phone
+home. Specifically:
+
+- **Works offline**: `init`, `upload`, `list`, `find`, `get`, `info`,
+  `diff`, `clauses`, `compose`, `swap`, `compare-clauses`, `upgrade`,
+  `clause-library`, `history`, `verify`, `export`, `stats`, `doctor`,
+  `sync` and `publish` (those use whatever git remote setup you have,
+  which can be local), `sources` (lists the bundled registry — no
+  network needed), `completion`.
+- **Needs network**: `import` (fetches the upstream template body from
+  the URL in the registry), `ask` (sends a request to the configured
+  LLM provider).
+- **Optional network**: `upgrade --interactive-explain` only contacts
+  the LLM when the user types `?` at the prompt.
+
+The CLI doesn't have any telemetry, analytics, or "phone home" calls.
+
+## How is this different from `git submodule`?
+
+Both are git-based and both let you share template files via a remote.
+The difference is in the unit of operation. `git submodule` pins a
+whole sub-repo at a commit; you bring the entire upstream tree in or
+not. This CLI works on individual **templates** and individual
+**clauses** within those templates, with provenance recorded in
+`meta.json`:
+
+- `template-vault import common-paper-mutual-nda` pulls one specific
+  template at one specific version, with its license and SHA-256
+  recorded.
+- `template-vault compose --base nda/house --as nda/house-startup`
+  forks one template and remembers the parent.
+- `template-vault swap nda/house-startup --clause "Term and Survival"
+  --from nda/yc` substitutes a single clause; the swap is recorded in
+  `clause_overrides[]`.
+- `template-vault upgrade nda/house-startup` pulls upstream parent
+  improvements but preserves locally-swapped clauses — deterministic
+  three-way merge at the clause level.
+
+None of this is something `git submodule` can do; submodules are too
+coarse-grained. Conversely, if you want to track an entire upstream
+template *repository* as a sub-tree, submodules are fine and this CLI
+isn't trying to replace them.
 
 ## Why "clause-aware" instead of "AI-powered"?
 
