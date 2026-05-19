@@ -39,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, cast
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -599,7 +599,17 @@ def _detect_from_explicit(text: str, explicit_map: List[Dict[str, str]]
     return out
 
 
-_ROMAN_RE = r"(?:M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{1,3})|I{1,3})"
+# Roman numerals 1-39 -- covers virtually all legal-document section
+# numbering. Structured as an alternation between "tens with optional ones"
+# (X, XX, XXX with optional ones digit appended) and "ones alone" (I-IX).
+# The longer alternatives come first within each group so the regex
+# engine doesn't short-circuit on a prefix match. Previous implementation
+# couldn't match bare V or X (the V?I{1,3} sub-pattern required at least
+# one I) which broke `Article V.` / `Part X.` numbering.
+_ROMAN_RE = (
+    r"(?:(?:XXX|XX|X)(?:IX|IV|VIII|VII|VI|V|III|II|I)?"
+    r"|IX|IV|VIII|VII|VI|V|III|II|I)"
+)
 
 # Match leading numbering tokens we want to strip. Order matters: longer
 # Article/Section forms come before bare numbers so they're consumed first.

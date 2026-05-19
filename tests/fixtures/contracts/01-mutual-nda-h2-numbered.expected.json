@@ -1,0 +1,15 @@
+{
+  "description": "Common Paper-style mutual NDA. H2 with `1. Title` numbering. Nine canonical NDA clauses.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Purpose"},
+    {"title": "Definition of Confidential Information"},
+    {"title": "Obligations"},
+    {"title": "Term and Survival"},
+    {"title": "Return or Destruction"},
+    {"title": "Residual Knowledge"},
+    {"title": "Remedies"},
+    {"title": "Governing Law"},
+    {"title": "Miscellaneous"}
+  ]
+}
