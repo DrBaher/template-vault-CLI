@@ -4,12 +4,14 @@
 > Public sources (Common Paper, YC SAFE, Bonterms) and your own house templates,
 > in one searchable, composable, version-tracked vault. Stdlib-only Python. MIT.
 >
-> Part of the [contract-operations CLI suite](https://cli.drbaher.com):
-> store (this repo) → [draft](https://github.com/DrBaher/draft-cli) →
-> [review](https://github.com/DrBaher/nda-review-cli) →
-> [compare](https://github.com/DrBaher/compare-cli) →
-> [convert](https://github.com/DrBaher/docx2pdf-cli) →
-> [sign](https://github.com/DrBaher/sign-cli).
+> Part of the contract-operations CLI suite. **template-vault-cli** is the
+> storage layer feeding the pre-execution pipeline:
+> [**draft-cli**](https://github.com/DrBaher/draft-cli) (fill placeholders) →
+> [**nda-review-cli**](https://github.com/DrBaher/nda-review-cli) (review, redline, negotiate) →
+> [**docx2pdf-cli**](https://github.com/DrBaher/docx2pdf-cli) (DOCX → PDF) →
+> [**sign-cli**](https://github.com/DrBaher/sign-cli) (signing + audit).
+> Cross-version drift detection via [**compare-cli**](https://github.com/DrBaher/compare-cli).
+> [Showcase site](https://cli.drbaher.com/).
 
 **Why it's different from a folder of `.docx` files:** the CLI treats clauses
 as first-class structural objects with provenance. You can fork a template,
@@ -215,19 +217,32 @@ full schema and the clause-detection regex.
 ## Suite
 
 `template-vault-cli` belongs to the **contract-operations CLI suite** at
-[cli.drbaher.com](https://cli.drbaher.com). The full pipeline:
+[cli.drbaher.com](https://cli.drbaher.com).
 
-- **`template-vault-cli`** (this repo) — store, search, fork, swap clauses.
-- **[draft-cli](https://github.com/DrBaher/draft-cli)** — fill template
-  placeholders (`[Party A]`, `[Effective Date]`, ...) to produce a ready-to-send draft.
-- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** — review,
-  redline, and negotiate NDAs against a house policy.
-- **[compare-cli](https://github.com/DrBaher/compare-cli)** — clause-aware
-  drift detection between two contract versions. Pre-signature gate.
-- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** — DOCX → PDF
-  conversion with backend transparency.
-- **[sign-cli](https://github.com/DrBaher/sign-cli)** — multi-provider
-  e-signature with hash-chained audit logs.
+**This repo (`template-vault-cli`)** is the storage layer: stores templates
+and clauses with provenance; emits a structured `info --json` payload that
+the other tools consume.
+
+**The pre-execution pipeline** is four tools, run in order:
+
+- **[draft-cli](https://github.com/DrBaher/draft-cli)** (fill placeholders) —
+  takes a template (often `template-vault get <ref>`) and fills `[Party A]`,
+  `[Effective Date]`, etc.
+- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** (review,
+  redline, negotiate) — evaluates a draft against a house policy.
+- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** (DOCX → PDF) —
+  converts the agreed Markdown / DOCX into a signable PDF.
+- **[sign-cli](https://github.com/DrBaher/sign-cli)** (signing + audit) —
+  collects signatures with hash-chained audit logs.
+
+**Auxiliary:** [compare-cli](https://github.com/DrBaher/compare-cli) is the
+clause-aware drift detector — runs between any two versions of a contract
+(useful as a pre-signature gate, useful for diffing what changed during
+negotiation). `template-vault-cli` and `compare-cli` share a portable
+clause-detection spec
+([compare-cli/docs/clause-detection.md](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md));
+see [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for the divergence
+notes.
 
 End-to-end pipeline shape:
 
@@ -239,10 +254,6 @@ template-vault get <ref>
   | docx2pdf - draft.pdf              # → PDF
   | sign send --signers ...           # → executed, audited
 ```
-
-`template-vault-cli` and `compare-cli` share a portable **clause-detection
-spec** ([compare-cli/docs/clause-detection.md](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)).
-See [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for the divergence notes.
 
 ## License
 

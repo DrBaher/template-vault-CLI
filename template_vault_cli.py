@@ -3199,7 +3199,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="template-vault",
         description="Git-backed, clause-aware legal-document template manager.",
     )
-    p.add_argument("--version", action="version", version=f"template-vault {__version__}")
+    p.add_argument("-V", "--version", action="version",
+                   version=f"template-vault {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     p_demo = sub.add_parser("demo",
