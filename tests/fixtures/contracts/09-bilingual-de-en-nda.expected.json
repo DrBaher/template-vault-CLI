@@ -1,0 +1,11 @@
+{
+  "description": "Bilingual (German/English) NDA. H2 titles contain Unicode (ü, ä, ö) and `/` separator. Validates UTF-8 handling end-to-end through detect_clauses + _strip_clause_number (numbering still strips cleanly).",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Zweck / Purpose"},
+    {"title": "Vertrauliche Informationen / Confidential Information"},
+    {"title": "Verpflichtungen / Obligations"},
+    {"title": "Dauer und Nachwirkung / Term and Survival"},
+    {"title": "Anwendbares Recht / Governing Law"}
+  ]
+}

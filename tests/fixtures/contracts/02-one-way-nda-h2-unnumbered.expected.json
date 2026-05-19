@@ -1,0 +1,11 @@
+{
+  "description": "Short one-way NDA. H2 unnumbered (`## Purpose`). Tests that numbering is optional.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Purpose"},
+    {"title": "Confidential Information"},
+    {"title": "Permitted Use"},
+    {"title": "Term"},
+    {"title": "Governing Law"}
+  ]
+}

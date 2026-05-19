@@ -1,0 +1,11 @@
+{
+  "description": "YC SAFE-style investment doc. H2 with `Article I.` (Roman numerals + word prefix). Subsections under Article I use H3 and must NOT be promoted to clauses. Tests both Roman numeral stripping (via the `Article` keyword) and H3-stays-in-body.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Events"},
+    {"title": "Definitions"},
+    {"title": "Company Representations"},
+    {"title": "Investor Representations"},
+    {"title": "Miscellaneous"}
+  ]
+}
