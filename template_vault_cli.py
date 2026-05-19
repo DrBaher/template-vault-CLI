@@ -2561,15 +2561,64 @@ _BASH_COMPLETION = r"""# template-vault bash completion
 #   eval "$(template-vault completion bash)"
 
 _template_vault_completions() {
-    local cur prev cmds
+    local cur prev cmd
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
-    cmds="init upload list find get info diff clauses compose swap compare-clauses upgrade clause-library ask sources import sync publish doctor verify history export completion"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    cmd="${COMP_WORDS[1]}"
+    local cmds="init upload list find get info diff clauses compose swap compare-clauses upgrade clause-library ask sources import sync publish doctor verify history export stats completion"
+
+    # 1) First positional: subcommand name.
     if [ "$COMP_CWORD" -eq 1 ]; then
         # shellcheck disable=SC2207
         COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
         return 0
     fi
+
+    # 2) After `--category`: complete from real categories.
+    if [ "$prev" = "--category" ]; then
+        local cats
+        cats=$(template-vault __complete categories 2>/dev/null)
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(compgen -W "${cats}" -- "${cur}") )
+        return 0
+    fi
+
+    # 3) After --base / --from / --as for compose/swap: complete refs.
+    if [ "$prev" = "--base" ] || [ "$prev" = "--from" ] || [ "$prev" = "--as" ]; then
+        local refs
+        refs=$(template-vault __complete refs 2>/dev/null)
+        # shellcheck disable=SC2207
+        COMPREPLY=( $(compgen -W "${refs}" -- "${cur}") )
+        return 0
+    fi
+
+    # 4) Subcommands whose first positional arg is <category>/<name>[@version].
+    case "$cmd" in
+        get|info|diff|history|clauses|swap|upgrade|export|verify|compare-clauses)
+            local ref_pos=2
+            # compare-clauses takes two refs (positions 2 and 3); both complete the same way.
+            if [ "$cmd" = "compare-clauses" ] && [ "$COMP_CWORD" -le 3 ]; then
+                ref_pos="$COMP_CWORD"
+            fi
+            if [ "$COMP_CWORD" -eq "$ref_pos" ]; then
+                # Detect `<ref>@` prefix and complete versions of that ref.
+                if [[ "$cur" == *"@"* ]]; then
+                    local ref="${cur%%@*}"
+                    local vers
+                    vers=$(template-vault __complete versions "${ref}" 2>/dev/null)
+                    # shellcheck disable=SC2207
+                    COMPREPLY=( $(compgen -W "${vers}" -P "${ref}@" -- "${cur#*@}") )
+                else
+                    local refs
+                    refs=$(template-vault __complete refs 2>/dev/null)
+                    # shellcheck disable=SC2207
+                    COMPREPLY=( $(compgen -W "${refs}" -- "${cur}") )
+                fi
+                return 0
+            fi
+            ;;
+    esac
 }
 complete -F _template_vault_completions template-vault
 """
@@ -2604,14 +2653,99 @@ _template_vault() {
         'verify:Content-level sha256 integrity check'
         'history:Chronological timeline'
         'export:Export a template to another format'
+        'stats:Vault dashboard'
         'completion:Emit a shell completion script'
     )
+
+    # Refs/versions/categories live-fetched from the CLI.
+    _tv_refs() {
+        local -a refs
+        refs=( ${(f)"$(template-vault __complete refs 2>/dev/null)"} )
+        _describe 'template' refs
+    }
+    _tv_versions_for_ref() {
+        local ref=$1
+        local -a vers
+        vers=( ${(f)"$(template-vault __complete versions "${ref}" 2>/dev/null)"} )
+        _describe 'version' vers
+    }
+    _tv_categories() {
+        local -a cats
+        cats=( ${(f)"$(template-vault __complete categories 2>/dev/null)"} )
+        _describe 'category' cats
+    }
+
     if (( CURRENT == 2 )); then
         _describe 'subcommand' cmds
+        return
     fi
+
+    local subcmd=$words[2]
+    case "$subcmd" in
+        get|info|diff|history|clauses|swap|upgrade|export|verify|compose|compare-clauses)
+            if (( CURRENT == 3 )) || ( [[ "$subcmd" == "compare-clauses" ]] && (( CURRENT == 4 )) ); then
+                _tv_refs
+                return
+            fi
+            ;;
+    esac
 }
 compdef _template_vault template-vault
 """
+
+
+# ---------------------------------------------------------------------------
+# Hidden `__complete` handler: invoked by the shell-completion scripts above.
+# Not exposed via argparse / --help. Three subcommands:
+#   __complete refs                 -> emits "<cat>/<name>" per line
+#   __complete versions <cat/name>  -> emits version IDs (v1, v2, ...)
+#   __complete categories           -> emits category names
+# All output goes to stdout; errors are silent (exit 0 with empty output so
+# the calling shell doesn't surface a stderr error mid-completion).
+# ---------------------------------------------------------------------------
+
+
+def _completion_handler(argv: List[str]) -> int:
+    if not argv:
+        return 0
+    what = argv[0]
+    try:
+        root = find_vault_root()
+    except VaultError:
+        # No vault, no completions. Silent exit so the shell doesn't print
+        # an error during tab-completion.
+        return 0
+    if what == "refs":
+        for cat, name, _path, _meta in iter_templates(root):
+            print(f"{cat}/{name}")
+        return 0
+    if what == "categories":
+        seen: Set[str] = set()
+        for cat, _name, _path, _meta in iter_templates(root):
+            if cat not in seen:
+                print(cat)
+                seen.add(cat)
+        return 0
+    if what == "versions":
+        if len(argv) < 2:
+            return 0
+        try:
+            cat, name, _ = parse_ref(argv[1])
+        except VaultError:
+            return 0
+        t_dir = template_dir(root, cat, name)
+        if not t_dir.exists():
+            return 0
+        try:
+            meta = load_meta(t_dir)
+        except VaultError:
+            return 0
+        for v in meta.get("versions") or []:
+            vid = v.get("id") if isinstance(v, dict) else None
+            if vid:
+                print(vid)
+        return 0
+    return 0
 
 
 def cmd_completion(args: argparse.Namespace) -> int:
@@ -3197,6 +3331,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     if "--no-color" in argv:
         os.environ["NO_COLOR"] = "1"
         argv = [a for a in argv if a != "--no-color"]
+    # Hidden `__complete` handler: called by the bash/zsh completion scripts
+    # to enumerate refs / versions / categories. Intentionally not in
+    # argparse so it doesn't show in --help. See `_completion_handler`.
+    if argv and argv[0] == "__complete":
+        return _completion_handler(argv[1:])
     if not argv:
         sys.stdout.write(_FIRST_RUN_HINT)
         return 0

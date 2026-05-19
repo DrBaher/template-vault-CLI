@@ -1,15 +1,16 @@
-.PHONY: help test test-quick build install clean smoke lint coverage typecheck
+.PHONY: help test test-quick build install clean smoke lint coverage typecheck release
 
 help:
 	@echo "Targets:"
-	@echo "  test         Run the full test suite"
-	@echo "  test-quick   Run a quick subset (no slow paths)"
-	@echo "  coverage     Run tests under coverage.py and print a report"
-	@echo "  typecheck    Run mypy on template_vault_cli.py"
-	@echo "  build        Build wheel + sdist into dist/"
-	@echo "  install      pipx install from current source"
-	@echo "  smoke        Build, pipx install, run end-to-end smoke"
-	@echo "  clean        Remove build artifacts"
+	@echo "  test                    Run the full test suite"
+	@echo "  test-quick              Run a quick subset (no slow paths)"
+	@echo "  coverage                Run tests under coverage.py and print a report"
+	@echo "  typecheck               Run mypy --strict on template_vault_cli.py"
+	@echo "  build                   Build wheel + sdist into dist/"
+	@echo "  install                 pipx install from current source"
+	@echo "  smoke                   Build, pipx install, run end-to-end smoke"
+	@echo "  release VERSION=X.Y.Z   Bump + promote CHANGELOG + commit + tag"
+	@echo "  clean                   Remove build artifacts"
 
 test:
 	python -m unittest discover -s tests -v
@@ -26,6 +27,12 @@ coverage:
 typecheck:
 	python -m pip install --quiet --upgrade 'mypy>=1.10'
 	python -m mypy --strict template_vault_cli.py
+
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release VERSION=X.Y.Z"; exit 2; \
+	fi
+	python scripts/release.py $(VERSION)
 
 build:
 	python -m pip install --quiet --upgrade build hatchling
