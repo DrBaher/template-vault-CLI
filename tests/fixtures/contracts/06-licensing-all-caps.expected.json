@@ -1,0 +1,12 @@
+{
+  "description": "Traditional licensing format. No H2, no bold-numbered -- ALL-CAPS section breaks only. Exercises the T3 fallback. Body shouts (`LIABILITY IS LIMITED...`, `NO INDIRECT...`) are inline within paragraphs (not standalone-line-with-blank-frame) so they don't match.",
+  "detector": "all_caps",
+  "clauses": [
+    {"title": "LICENSE GRANT"},
+    {"title": "WARRANTIES"},
+    {"title": "LIMITATION OF LIABILITY"},
+    {"title": "INDEMNIFICATION"},
+    {"title": "TERMINATION"},
+    {"title": "GOVERNING LAW"}
+  ]
+}

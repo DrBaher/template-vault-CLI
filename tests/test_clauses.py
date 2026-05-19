@@ -146,6 +146,15 @@ class StripClauseNumberTests(unittest.TestCase):
         ("§4.2 Term", "Term"),
         ("Clause 7. Term", "Term"),
         ("Part II. Term", "Term"),
+        # Roman numerals: bare V, X, and combos must all strip. (Earlier
+        # `_ROMAN_RE` couldn't match bare `V` or `X` — only I/II/III/IV/IX
+        # plus compound forms with a trailing I.)
+        ("Article V. Miscellaneous", "Miscellaneous"),
+        ("Part V. Warranties", "Warranties"),
+        ("Section X. Termination", "Termination"),
+        ("Article XX. Annex", "Annex"),
+        ("Article XV. Survival", "Survival"),
+        ("Article XIX. Notice", "Notice"),
         # No numbering — should be a no-op:
         ("Purpose", "Purpose"),
         ("Term and Survival", "Term and Survival"),

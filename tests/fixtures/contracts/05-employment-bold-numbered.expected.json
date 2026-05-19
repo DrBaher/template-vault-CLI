@@ -1,0 +1,13 @@
+{
+  "description": "Employment agreement with NO H2 headings -- pure bold-numbered (`**1. Title**`). Exercises the T2 fallback. Note: H1 (`# Employment Agreement`) doesn't count as a clause.",
+  "detector": "bold",
+  "clauses": [
+    {"title": "Position and Duties"},
+    {"title": "Compensation"},
+    {"title": "At-Will Employment"},
+    {"title": "Confidentiality"},
+    {"title": "IP Assignment"},
+    {"title": "Non-Solicitation"},
+    {"title": "Governing Law"}
+  ]
+}

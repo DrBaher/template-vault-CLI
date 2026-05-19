@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.4 — 2026-05-19
+
+Real-contract fixture corpus + a Roman-numeral bug it surfaced.
+
+### Added
+- **`tests/fixtures/contracts/`** — 10 representative contract fixtures
+  spanning every detection tier and every supported numbering shape:
+  Common Paper-style mutual NDA (H2 numbered), one-way NDA (H2
+  unnumbered), YC SAFE-style with `Article I.` Roman numerals and H3
+  subsections, Bonterms cloud-style with ALL-CAPS shouts in clause
+  bodies, employment agreement (bold-numbered only), traditional
+  licensing (ALL-CAPS only), MSA with every supported numbering shape
+  mixed (`Section`/`§`/`Clause`/`Part`/`(N)`/`N.M`), DPA with deep H3
+  nesting, bilingual German/English NDA with Unicode titles, and a
+  truly unstructured doc that requires an explicit `clauses` map.
+  Each `.md` has a sibling `.expected.json` listing the ground-truth
+  clause titles in order plus the expected detector tier.
+- **`tests/test_fixture_corpus.py`** — auto-discovers fixtures and
+  asserts: (a) detected clause titles match the ground truth in order,
+  (b) detector tier matches the annotation, (c) no overlap between
+  adjacent clauses, (d) no empty titles, (e) `slice_clause_text`
+  round-trips `text[start:end]`, (f) `upload <fixture> && clauses
+  <ref>` works end-to-end through the CLI for each non-explicit
+  fixture.
+
+### Fixed
+- **Bare Roman numerals `V`, `X`, `XX`, `XXX`, `XV`, `XIX` etc. now
+  strip correctly.** The previous `_ROMAN_RE` had a `V?I{1,3}` sub-pattern
+  that required at least one trailing `I`, so headings like
+  `Article V. Miscellaneous`, `Part V. Warranties`, `Section X. Termination`
+  weren't normalized — `_strip_clause_number` left them as
+  `"V. Miscellaneous"` etc., breaking title-equality matching across
+  templates. Replaced with an explicit alternation covering Roman
+  numerals 1-39 (longer alternatives first to avoid prefix
+  short-circuits). 6 new test cases in `test_clauses.py` lock the
+  behavior. Surfaced by fixtures 03 (YC SAFE `Article V.`) and 07
+  (MSA `Part V.`).
+
+### Stats
+Tests: 215 → **222** (+7). Coverage still 87%. `mypy --strict`: clean.
+The fixture corpus is the deepest behavioral test surface added so
+far — it catches false negatives on real-shape input that the
+property tests (random) and unit tests (synthetic) can't.
+
 ## 0.4.3 — 2026-05-19
 
 Quality round: property-based clause-detection tests + clean

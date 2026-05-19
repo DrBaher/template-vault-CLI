@@ -1,0 +1,14 @@
+{
+  "description": "MSA with every supported numbering shape mixed: `Section N.`, `§ N.`, `Clause N.`, `Part N.` (Roman), `(N)`, plain `N.`, `N.M`. Exercises _strip_clause_number across the full grammar.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Scope of Services"},
+    {"title": "Fees and Invoicing"},
+    {"title": "Intellectual Property"},
+    {"title": "Confidentiality"},
+    {"title": "Warranties"},
+    {"title": "Limitation of Liability"},
+    {"title": "Termination"},
+    {"title": "Governing Law"}
+  ]
+}

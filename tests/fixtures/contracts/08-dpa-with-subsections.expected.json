@@ -1,0 +1,17 @@
+{
+  "description": "DPA with deep H3 subsection nesting (1.1, 1.2, 2.1, 2.2, 3.1). H3 must NOT be promoted to clauses; subsections stay inside their parent clause's body. Tests subsection-aware boundary handling.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Definitions"},
+    {"title": "Processing Instructions"},
+    {"title": "Security"},
+    {"title": "International Transfers"},
+    {"title": "Data Subject Rights"},
+    {"title": "Audit Rights"},
+    {"title": "Term and Deletion"}
+  ],
+  "additional_assertions": {
+    "definitions_body_contains_h3": true,
+    "no_h3_promoted_to_clause": true
+  }
+}
