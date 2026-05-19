@@ -39,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -1225,7 +1225,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
 def cmd_list(args: argparse.Namespace) -> int:
     root = find_vault_root()
-    rows: List[Tuple[str, str, str, List[str], List[str]]] = []
+    rows: List[Dict[str, Any]] = []
     for cat, name, _path, meta in iter_templates(root):
         if args.category and cat != args.category:
             continue
@@ -1233,22 +1233,46 @@ def cmd_list(args: argparse.Namespace) -> int:
             continue
         if args.jurisdiction and args.jurisdiction not in (meta.get("jurisdiction") or []):
             continue
-        rows.append(
-            (cat, name, meta.get("latest_version") or "?",
-             meta.get("tags") or [], meta.get("jurisdiction") or []),
-        )
+        rows.append({
+            "category": cat,
+            "name": name,
+            "ref": f"{cat}/{name}",
+            "latest_version": meta.get("latest_version") or "?",
+            "tags": list(meta.get("tags") or []),
+            "jurisdiction": list(meta.get("jurisdiction") or []),
+            "summary": meta.get("summary") or "",
+        })
+    if getattr(args, "json", False):
+        json.dump({"results": rows}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
     if not rows:
         print("(no templates match)")
         return 0
-    width = max(len(f"{c}/{n}") for c, n, *_ in rows)
-    for cat, name, ver, tags, juris in rows:
-        ref = f"{cat}/{name}".ljust(width)
-        extra = []
-        if tags:
-            extra.append("tags=" + ",".join(tags))
-        if juris:
-            extra.append("juris=" + ",".join(juris))
-        print(f"{ref}  {ver}  " + "  ".join(extra))
+    width = max(len(r["ref"]) for r in rows)
+    verbose = bool(getattr(args, "verbose", False))
+    for r in rows:
+        ref = r["ref"].ljust(width)
+        if verbose:
+            print(f"{ref}  {r['latest_version']}")
+            if r["summary"]:
+                # Truncate to ~80 chars to keep one summary line readable.
+                s = r["summary"][:80] + ("..." if len(r["summary"]) > 80 else "")
+                print(f"  {_dim(s)}")
+            meta_bits = []
+            if r["tags"]:
+                meta_bits.append("tags=" + ",".join(r["tags"]))
+            if r["jurisdiction"]:
+                meta_bits.append("juris=" + ",".join(r["jurisdiction"]))
+            if meta_bits:
+                print(f"  {_dim('  '.join(meta_bits))}")
+        else:
+            extra = []
+            if r["tags"]:
+                extra.append("tags=" + ",".join(r["tags"]))
+            if r["jurisdiction"]:
+                extra.append("juris=" + ",".join(r["jurisdiction"]))
+            print(f"{ref}  {r['latest_version']}  " + "  ".join(extra))
     return 0
 
 
@@ -2653,10 +2677,107 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if mismatched else 0
 
 
-def cmd_doctor(_args: argparse.Namespace) -> int:
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Single-screen vault overview: counts, hygiene coverage, last activity."""
+    root = find_vault_root()
+    cfg = read_vault_config(root)
+    created = cfg.get("created") or "?"
+
+    by_cat: Dict[str, int] = {}
+    versions = 0
+    imports = 0
+    imports_hashed = 0
+    composed = 0
+    with_summary = 0
+    with_tags = 0
+    with_sha = 0
+    total_versions = 0
+    last_activity: Optional[str] = None
+    last_activity_ref: Optional[str] = None
+
+    sources_set: set = set()
+    for cat, name, _path, meta in iter_templates(root):
+        by_cat[cat] = by_cat.get(cat, 0) + 1
+        vs = meta.get("versions") or []
+        versions += 1  # counts templates; rename below
+        total_versions += len(vs)
+        if (meta.get("summary") or "").strip():
+            with_summary += 1
+        if meta.get("tags"):
+            with_tags += 1
+        if meta.get("source"):
+            imports += 1
+            sources_set.add(meta.get("source") or "")
+        if meta.get("derived_from"):
+            composed += 1
+        for v in vs:
+            if isinstance(v, dict) and v.get("sha256"):
+                with_sha += 1
+        # Track most-recent "added" timestamp across all versions.
+        for v in vs:
+            if isinstance(v, dict):
+                added = v.get("added")
+                if added and (last_activity is None or added > last_activity):
+                    last_activity = added
+                    last_activity_ref = f"{cat}/{name}@{v.get('id')}"
+        # Imports with verified hash: source field set AND at least one version
+        # has a recorded sha256.
+        if meta.get("source") and any(
+            isinstance(v, dict) and v.get("sha256") for v in vs
+        ):
+            imports_hashed += 1
+
+    templates_total = sum(by_cat.values())
+
+    if getattr(args, "json", False):
+        payload = {
+            "vault_root": str(root),
+            "created": created,
+            "categories": dict(sorted(by_cat.items())),
+            "templates": templates_total,
+            "versions_total": total_versions,
+            "imports": imports,
+            "imports_hashed": imports_hashed,
+            "import_sources": sorted(sources_set),
+            "compositions": composed,
+            "coverage": {
+                "with_summary": [with_summary, templates_total],
+                "with_tags":    [with_tags, templates_total],
+                "versions_with_sha256": [with_sha, total_versions],
+            },
+            "last_activity": last_activity,
+            "last_activity_ref": last_activity_ref,
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
+    print(f"Vault:         {root}  (initialized {created})")
+    cat_summary = ", ".join(f"{c}: {n}" for c, n in sorted(by_cat.items())) or "-"
+    print(f"Categories:    {len(by_cat)}        ({cat_summary})")
+    print(f"Templates:     {templates_total}")
+    avg = (total_versions / templates_total) if templates_total else 0
+    print(f"Versions:      {total_versions}        (avg {avg:.1f} per template)")
+    if imports:
+        print(f"Imports:       {imports}        "
+              f"(from {len(sources_set)} public source(s), "
+              f"{imports_hashed} with verified sha256)")
+    if composed:
+        print(f"Compositions:  {composed}        (derived templates with parent provenance)")
+    if templates_total:
+        print(f"Coverage:      {with_summary}/{templates_total}    templates have summaries")
+        print(f"               {with_tags}/{templates_total}    templates have at least one tag")
+        print(f"               {with_sha}/{total_versions}    versions have recorded sha256")
+    if last_activity and last_activity_ref:
+        print(f"Last activity: {last_activity} (added {last_activity_ref})")
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
     root = find_vault_root()
     cfg = read_vault_config(root)
     issues: List[str] = []
+    warnings: List[str] = []
     issues.extend(validate_vault_config(cfg))
     seen_categories: List[str] = []
     seen_templates = 0
@@ -2727,16 +2848,72 @@ def cmd_doctor(_args: argparse.Namespace) -> int:
                 except (VaultError, OSError):
                     pass
 
+            # ---- Quality warnings (not failures by default) ----
+            ref = f"{cat_dir.name}/{t_dir.name}"
+            # Empty summary degrades `find` recall and weakens `ask`.
+            if not (meta.get("summary") or "").strip():
+                warnings.append(
+                    f"{ref}: empty summary -- `find` and `ask` recall will be weaker. "
+                    f"Add via `upload --amend --summary ...` or edit meta.json."
+                )
+            # Zero detected clauses + no explicit map = unusable for swap/upgrade.
+            try:
+                f = resolve_version_file(t_dir, meta, None)
+                cs = detect_clauses(
+                    f.read_text(),
+                    explicit_map=explicit if isinstance(explicit, list) else None,
+                )
+                if not cs and not (isinstance(explicit, list) and explicit):
+                    warnings.append(
+                        f"{ref}: no clauses detected. Use H2 headings (`## Foo`), "
+                        f"the bold/ALL-CAPS fallback, or supply an explicit "
+                        f"`clauses` map in meta.json."
+                    )
+            except (VaultError, OSError):
+                pass
+            # Versions without recorded sha256 -- run `verify --update-hashes`.
+            unhashed = sum(
+                1 for v in (meta.get("versions") or [])
+                if isinstance(v, dict) and not v.get("sha256")
+            )
+            if unhashed:
+                warnings.append(
+                    f"{ref}: {unhashed} version(s) without recorded sha256. "
+                    f"Run `template-vault verify --update-hashes` to populate."
+                )
+            # Never used (no last_used + use_count is 0) -- graveyard candidate.
+            if not meta.get("last_used") and not meta.get("use_count"):
+                warnings.append(
+                    f"{ref}: never used (use_count=0, last_used=null). "
+                    f"Consider archiving if it's superseded."
+                )
+
     print(f"Vault root:    {root}")
     print(f"Categories:    {len(seen_categories)} ({', '.join(seen_categories) or '-'})")
     print(f"Templates:     {seen_templates}")
-    if not issues:
-        print("Status:        OK")
+
+    strict = bool(getattr(args, "strict", False))
+    quiet_warnings = bool(getattr(args, "quiet_warnings", False))
+
+    if not issues and (quiet_warnings or not warnings):
+        print(_green("Status:") + "        OK")
         return 0
-    print(f"Status:        {len(issues)} issue(s)")
-    for i in issues:
-        print(f"  - {i}")
-    return 1
+    if issues:
+        print(f"{_red('Status:')}        {len(issues)} issue(s)"
+              + (f", {len(warnings)} warning(s)" if (warnings and not quiet_warnings) else ""))
+        for i in issues:
+            print(f"  - {i}")
+    else:
+        # No hard issues but quality warnings exist.
+        label = "Status:        OK"
+        if not quiet_warnings:
+            label += f"  ({len(warnings)} quality warning(s))"
+        print(_green(label[:14]) + label[14:])
+    if warnings and not quiet_warnings:
+        print(_yellow("\nQuality warnings:"))
+        for w in warnings:
+            print(f"  - {w}")
+    return 1 if issues or (strict and warnings) else 0
 
 
 # ---------------------------------------------------------------------------
@@ -2804,6 +2981,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--category")
     p_list.add_argument("--tag")
     p_list.add_argument("--jurisdiction")
+    p_list.add_argument("--verbose", action="store_true",
+                        help="Show summary + tags + jurisdiction on dedicated lines")
+    p_list.add_argument("--json", action="store_true",
+                        help="Emit a structured JSON payload (results[])")
     p_list.set_defaults(func=cmd_list)
 
     p_find = sub.add_parser("find", help="Keyword search across metadata")
@@ -2930,7 +3111,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_pub = sub.add_parser("publish", help="git push (thin wrapper)")
     p_pub.set_defaults(func=cmd_publish)
 
-    p_doc = sub.add_parser("doctor", help="Vault integrity check")
+    p_stats = sub.add_parser("stats", help="Vault dashboard: counts, coverage, last activity")
+    p_stats.add_argument("--json", action="store_true",
+                         help="Emit a structured JSON payload of vault statistics")
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_doc = sub.add_parser("doctor", help="Vault integrity check + quality warnings")
+    p_doc.add_argument("--strict", action="store_true",
+                       help="Exit non-zero on quality warnings too (default: only on issues)")
+    p_doc.add_argument("--quiet-warnings", action="store_true",
+                       help="Suppress quality warnings; show only hard issues")
     p_doc.set_defaults(func=cmd_doctor)
 
     p_comp = sub.add_parser("completion", help="Emit a shell completion script (bash or zsh)")
@@ -2986,6 +3176,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 pass
     argv = sys.argv[1:] if argv is None else argv
+    # Global --no-color flag: intercept before argparse so it works on every
+    # subcommand without needing a parent-parser hookup. Sets the NO_COLOR
+    # env var, which _color_enabled() already honors.
+    if "--no-color" in argv:
+        os.environ["NO_COLOR"] = "1"
+        argv = [a for a in argv if a != "--no-color"]
     if not argv:
         sys.stdout.write(_FIRST_RUN_HINT)
         return 0
