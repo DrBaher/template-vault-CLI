@@ -183,26 +183,30 @@ keeps the deterministic 95% local.
 
 ## What's the relationship to the other CLIs in the suite?
 
-`template-vault-cli` is one of six tools in the
-[contract-operations CLI suite](https://cli.drbaher.com). Each does one
-piece of the pre-execution pipeline; they compose via stdin/stdout +
-deterministic JSON contracts.
+`template-vault-cli` is the **storage layer** of the
+[contract-operations CLI suite](https://cli.drbaher.com). It feeds the
+**pre-execution pipeline** — four tools, run in order:
 
-- **`template-vault-cli`** stores templates (and clauses) with provenance.
-- **[draft-cli](https://github.com/DrBaher/draft-cli)** fills the placeholders
-  in a template to produce a draft (`[Party A]` → `"Acme Corporation"`, etc.).
-- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** reviews and
-  negotiates against a house policy. The integration with this repo is via
-  `info --json` and `get` — nda-review-cli can pull clause structure and
-  preferred-language references from a configured vault.
-- **[compare-cli](https://github.com/DrBaher/compare-cli)** does
-  clause-aware drift detection between two versions of a contract. Useful as
-  a pre-signature gate. Shares the [clause-detection spec](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)
-  with this repo (see [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for
-  divergence notes).
-- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** + **[sign-cli](https://github.com/DrBaher/sign-cli)**
-  handle the conversion and signing steps after review.
+1. **[draft-cli](https://github.com/DrBaher/draft-cli)** fills placeholders
+   in a template (`[Party A]` → `"Acme Corporation"`, etc.).
+2. **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** reviews
+   and negotiates against a house policy. Pulls clause structure and
+   preferred-language references from a configured vault via
+   `template-vault info --json` and `template-vault get`.
+3. **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** converts the
+   agreed draft to a signable PDF.
+4. **[sign-cli](https://github.com/DrBaher/sign-cli)** collects signatures
+   with hash-chained audit logs.
 
+**Auxiliary:**
+[compare-cli](https://github.com/DrBaher/compare-cli) is the clause-aware
+drift detector — runs between two versions of a contract (typically the
+last-agreed draft vs the about-to-be-signed PDF). Shares the
+[clause-detection spec](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)
+with this repo; see [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for
+the divergence notes.
+
+All six tools compose via stdin/stdout + deterministic JSON contracts.
 Typical pipeline (each step is one of the CLIs):
 
 ```
