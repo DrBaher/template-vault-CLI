@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/info-json.schema.json",
+  "title": "template-vault info --json output schema (v1)",
+  "description": "Structured payload emitted by `template-vault info <ref> --json`. The contract downstream tools (nda-review-cli etc.) consume.",
+  "type": "object",
+  "required": [
+    "ref", "latest_version", "version_count", "clauses",
+    "clause_overrides", "clause_aliases"
+  ],
+  "properties": {
+    "ref":            {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+    "latest_version": {"type": ["string", "null"], "pattern": "^v\\d+$"},
+    "latest_path":    {"type": ["string", "null"]},
+    "version_count":  {"type": "integer", "minimum": 0},
+    "jurisdiction":   {"type": "array", "items": {"type": "string"}},
+    "party_type":     {"type": "array", "items": {"type": "string"}},
+    "deal_type":      {"type": "array", "items": {"type": "string"}},
+    "tags":           {"type": "array", "items": {"type": "string"}},
+    "license":        {"type": ["string", "null"]},
+    "source":         {"type": ["string", "null"]},
+    "derived_from":   {"type": ["string", "null"]},
+    "forked_at_parent_version": {"type": ["string", "null"]},
+    "summary":        {"type": "string"},
+    "use_count":      {"type": "integer", "minimum": 0},
+    "last_used":      {"type": ["string", "null"]},
+    "clauses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "anchor", "aliases"],
+        "properties": {
+          "title":   {"type": "string"},
+          "anchor":  {"type": "string"},
+          "aliases": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "clause_overrides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["clause_title", "source_template", "source_version", "swapped_at"],
+        "properties": {
+          "clause_title":    {"type": "string"},
+          "source_template": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+          "source_version":  {"type": "string", "pattern": "^v\\d+$"},
+          "swapped_at":      {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "clause_aliases": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  }
+}

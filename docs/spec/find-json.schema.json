@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/find-json.schema.json",
+  "title": "template-vault find --json output schema (v1)",
+  "type": "object",
+  "required": ["query", "results"],
+  "properties": {
+    "query":   {"type": "string"},
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref", "latest_version", "score"],
+        "properties": {
+          "ref":            {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+          "latest_version": {"type": "string"},
+          "score":          {"type": "number", "minimum": 0, "maximum": 2.0},
+          "summary":        {"type": "string"},
+          "tags":           {"type": "array", "items": {"type": "string"}},
+          "jurisdiction":   {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}
