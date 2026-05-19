@@ -63,6 +63,58 @@ class DoctorTests(CliCase):
             self.assertNotEqual(code, 0)
             self.assertIn("anchor", out.lower())
 
+    def test_warns_on_empty_summary(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            # Scrub summary so the warning fires.
+            mp = v / "nda" / "x" / "meta.json"
+            meta = json.loads(mp.read_text())
+            meta["summary"] = ""
+            mp.write_text(json.dumps(meta, indent=2) + "\n")
+            code, out, _err = run_cli("doctor")
+            self.assertEqual(code, 0)  # warnings don't fail by default
+            self.assertIn("Quality warnings", out)
+            self.assertIn("empty summary", out)
+
+    def test_warns_on_unrecorded_sha256(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            code, out, _err = run_cli("doctor")
+            self.assertEqual(code, 0)
+            # Newly-added templates have no recorded sha256 -> warning.
+            self.assertIn("without recorded sha256", out)
+            self.assertIn("verify --update-hashes", out)
+
+    def test_warns_on_never_used_template(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            code, out, _err = run_cli("doctor")
+            self.assertEqual(code, 0)
+            self.assertIn("never used", out)
+
+    def test_warns_on_no_clauses_detected(self):
+        with temp_vault() as v:
+            # Template with no H2 / fallback-detectable headings.
+            add_template(v, "nda", "flat", "Just plain prose. No headings.\n")
+            code, out, _err = run_cli("doctor")
+            self.assertEqual(code, 0)
+            self.assertIn("no clauses detected", out.lower())
+
+    def test_quiet_warnings_suppresses_them(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            code, out, _err = run_cli("doctor", "--quiet-warnings")
+            self.assertEqual(code, 0)
+            self.assertNotIn("Quality warnings", out)
+            self.assertNotIn("never used", out)
+
+    def test_strict_treats_warnings_as_failures(self):
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
+            code, _out, _err = run_cli("doctor", "--strict")
+            # Warnings DO exist (empty summary etc.), strict makes them fail.
+            self.assertNotEqual(code, 0)
+
     def test_flags_dangling_clause_alias_key(self):
         with temp_vault() as v:
             add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL)
