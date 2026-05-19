@@ -1,10 +1,11 @@
-.PHONY: help test test-quick build install clean smoke lint coverage
+.PHONY: help test test-quick build install clean smoke lint coverage typecheck
 
 help:
 	@echo "Targets:"
 	@echo "  test         Run the full test suite"
 	@echo "  test-quick   Run a quick subset (no slow paths)"
 	@echo "  coverage     Run tests under coverage.py and print a report"
+	@echo "  typecheck    Run mypy on template_vault_cli.py"
 	@echo "  build        Build wheel + sdist into dist/"
 	@echo "  install      pipx install from current source"
 	@echo "  smoke        Build, pipx install, run end-to-end smoke"
@@ -21,6 +22,10 @@ coverage:
 	python -m coverage erase
 	python -m coverage run -m unittest discover -s tests -v
 	python -m coverage report
+
+typecheck:
+	python -m pip install --quiet --upgrade 'mypy>=1.10'
+	python -m mypy --strict template_vault_cli.py
 
 build:
 	python -m pip install --quiet --upgrade build hatchling
