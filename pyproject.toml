@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "template-vault-cli"
-version = "0.4.0"
+version = "0.4.1"
 description = "Git-backed, clause-aware legal-document template manager. Stdlib-only Python."
 readme = "README.md"
 requires-python = ">=3.9"
