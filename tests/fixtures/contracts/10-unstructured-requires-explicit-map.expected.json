@@ -1,0 +1,21 @@
+{
+  "description": "Unstructured contract (inline `Purpose.` `Term.` `Fees.` -- no H2, no bold, no ALL-CAPS that would qualify). detect_clauses returns []; the user is expected to supply an explicit `clauses` map in meta.json. This fixture also validates that supplying the explicit map works correctly on this text.",
+  "detector": "explicit",
+  "auto_detect_returns_empty": true,
+  "explicit_map": [
+    {"title": "Purpose", "anchor": "Purpose. Vendor"},
+    {"title": "Term",    "anchor": "Term. This agreement"},
+    {"title": "Fees",    "anchor": "Fees. Customer"},
+    {"title": "Confidentiality", "anchor": "Confidentiality. Each party"},
+    {"title": "Governing Law",   "anchor": "Governing Law. This agreement"},
+    {"title": "Miscellaneous",   "anchor": "Miscellaneous. This document"}
+  ],
+  "clauses": [
+    {"title": "Purpose"},
+    {"title": "Term"},
+    {"title": "Fees"},
+    {"title": "Confidentiality"},
+    {"title": "Governing Law"},
+    {"title": "Miscellaneous"}
+  ]
+}

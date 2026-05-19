@@ -1,0 +1,14 @@
+{
+  "description": "Bonterms-style cloud terms. H2 numbered. Bodies contain ALL-CAPS shouted clauses (`AS IS`, `EXCEPT AS EXPRESSLY SET FORTH HEREIN`) that must NOT activate the T3 fallback because H2 already fired. Tests cascade strictness on real-style input.",
+  "detector": "h2",
+  "clauses": [
+    {"title": "Definitions"},
+    {"title": "Service Access"},
+    {"title": "Customer Data and Security"},
+    {"title": "Fees and Payment"},
+    {"title": "Warranties and Disclaimers"},
+    {"title": "Limitation of Liability"},
+    {"title": "Term and Termination"},
+    {"title": "Governing Law"}
+  ]
+}
