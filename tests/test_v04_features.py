@@ -134,16 +134,21 @@ class ExportTests(CliCase):
 
 class WhyFlagTests(CliCase):
     def test_compose_why_explains_what_happened(self):
+        # --why output goes to STDERR so it doesn't pollute structured stdout
+        # (e.g. `info --json --why | jq`). Matches compare-cli's convention.
         with temp_vault() as v:
             add_template(v, "nda", "house", SAMPLE_NDA_MUTUAL)
-            code, out, _err = run_cli(
+            code, out, err = run_cli(
                 "compose", "--base", "nda/house",
                 "--as", "nda/derived", "--why",
             )
             self.assertEqual(code, 0)
-            self.assertIn("[why]", out)
-            self.assertIn("derived_from", out)
-            self.assertIn("forked_at_parent_version", out)
+            self.assertIn("[why]", err)
+            self.assertIn("derived_from", err)
+            self.assertIn("forked_at_parent_version", err)
+            # The primary "Composed:" success line stays on stdout.
+            self.assertIn("Composed:", out)
+            self.assertNotIn("[why]", out)
 
     def test_swap_why_lists_clause_resolution(self):
         with temp_vault() as v:
@@ -151,24 +156,26 @@ class WhyFlagTests(CliCase):
             add_template(v, "nda", "yc", SAMPLE_NDA_STARTUP_FRIENDLY)
             run_cli("compose", "--base", "nda/house",
                     "--as", "nda/house-startup")
-            code, out, _err = run_cli(
+            code, out, err = run_cli(
                 "swap", "nda/house-startup",
                 "--clause", "Term and Survival",
                 "--from", "nda/yc", "--why",
             )
             self.assertEqual(code, 0)
-            self.assertIn("[why]", out)
-            self.assertIn("resolved source clause", out)
-            self.assertIn("clause_overrides", out)
+            self.assertIn("[why]", err)
+            self.assertIn("resolved source clause", err)
+            self.assertIn("clause_overrides", err)
+            self.assertNotIn("[why]", out)
 
     def test_no_why_flag_no_block(self):
         with temp_vault() as v:
             add_template(v, "nda", "house", SAMPLE_NDA_MUTUAL)
-            code, out, _err = run_cli(
+            code, out, err = run_cli(
                 "compose", "--base", "nda/house", "--as", "nda/derived",
             )
             self.assertEqual(code, 0)
             self.assertNotIn("[why]", out)
+            self.assertNotIn("[why]", err)
 
 
 class CompletionTests(CliCase):
@@ -280,6 +287,68 @@ class CompleteHandlerTests(CliCase):
                 self.assertEqual(err, "")
             finally:
                 os.chdir(prev)
+
+
+class DemoCommandTests(CliCase):
+    """`template-vault demo` is the zero-config first-experience that mirrors
+    sibling CLIs (compare-cli --demo, draft-cli --demo). Tests confirm the
+    end-to-end flow works without arguments."""
+
+    def test_demo_runs_end_to_end_in_specified_path(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            demo_path = os.path.join(d, "demo")
+            code, out, _err = run_cli("demo", "--path", demo_path)
+            self.assertEqual(code, 0)
+            # Each step printed:
+            for label in ("[1/5]", "[2/5]", "[3/5]", "[4/5]", "[5/5]"):
+                self.assertIn(label, out)
+            # End-to-end artifacts visible in the output:
+            self.assertIn("Initialized vault", out)
+            self.assertIn("Created: nda/house@v1", out)
+            self.assertIn("Created: nda/yc@v1", out)
+            self.assertIn("Composed: nda/house-startup@v1", out)
+            self.assertIn("Swapped clause 'Term and Survival'", out)
+            self.assertIn("'Term and Survival' from nda/yc@v1", out)
+            self.assertIn("Demo complete", out)
+            # Real files on disk:
+            from pathlib import Path
+            self.assertTrue(Path(demo_path, ".vault.json").exists())
+            self.assertTrue(Path(demo_path, "nda", "house-startup",
+                                  "meta.json").exists())
+
+    def test_demo_refuses_non_empty_path_without_clean(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            demo_path = os.path.join(d, "demo")
+            os.makedirs(demo_path)
+            # Put something in the dir to make it non-empty.
+            with open(os.path.join(demo_path, "stray.txt"), "w") as f:
+                f.write("don't clobber me")
+            code, _out, err = run_cli("demo", "--path", demo_path)
+            self.assertNotEqual(code, 0)
+            self.assertIn("not empty", err.lower())
+            self.assertIn("--clean", err)
+            # Stray file untouched.
+            self.assertTrue(
+                os.path.exists(os.path.join(demo_path, "stray.txt"))
+            )
+
+    def test_demo_clean_flag_wipes_existing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            demo_path = os.path.join(d, "demo")
+            os.makedirs(demo_path)
+            with open(os.path.join(demo_path, "stray.txt"), "w") as f:
+                f.write("clobber me")
+            code, _out, _err = run_cli("demo", "--path", demo_path, "--clean")
+            self.assertEqual(code, 0)
+            self.assertFalse(
+                os.path.exists(os.path.join(demo_path, "stray.txt"))
+            )
+            # Vault was recreated from scratch.
+            from pathlib import Path
+            self.assertTrue(Path(demo_path, ".vault.json").exists())
 
 
 class ColorTests(CliCase):

@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## Unreleased
+
+### Added
+- **`template-vault demo`** — zero-config first-experience command.
+  Sets up a vault in `$TMPDIR/template-vault-demo`, uploads two inline
+  NDA fixtures, composes a derived template, swaps a clause, prints
+  the result. Mirrors the pattern used by sibling CLIs (`compare-cli
+  --demo`, `draft-cli --demo`) so the suite-onboarding experience is
+  consistent across all six tools. `--path PATH` to use a different
+  location; `--clean` to wipe an existing demo dir.
+- **`-q` / `--silent` aliases** alongside the existing `--quiet` flags
+  on `ask` and `doctor`. Three of four sibling CLIs use the `-q`
+  short flag; this brings template-vault in line.
+
+### Changed
+- **`--why` output now goes to stderr instead of stdout.** Matches
+  `compare-cli`. Closes a real footgun: previously
+  `template-vault info nda/x --why --json | jq` would have the
+  `[why]` block pollute the JSON pipe and break `jq`. Primary
+  command output (`Composed:`, `Swapped`, etc.) stays on stdout
+  as before.
+
+### Stats
+Tests: 240 → **243** (+3 demo tests). Coverage 87% → **88%**.
+`mypy --strict`: clean.
+
+This round closes three sibling-suite-consistency gaps surfaced by an
+audit against `nda-review-cli`, `compare-cli`, and `draft-cli`. The
+remaining intentional divergences (granular `--yes-*` consent flags
+vs sibling `--yes` umbrella; `completion` as a subcommand vs flag)
+are documented as deliberate and won't be unified.
+
 ## 0.4.5 — 2026-05-19
 ### Added
 - **Smart shell completion.** Bash and zsh scripts now call back into

@@ -169,13 +169,14 @@ def _eprint(*args: Any, **kwargs: Any) -> None:
 
 def _why_print(args_ns: argparse.Namespace, header: str, *lines: str) -> None:
     """Emit a `--why` block explaining what the command actually did.
-    No-op unless `--why` was passed. Block goes to stdout so it's
-    pipe-able with the command's primary output."""
+    No-op unless `--why` was passed. Block goes to **stderr** so it
+    doesn't pollute stdout for callers piping structured output
+    (e.g. `info --why --json | jq`). Matches compare-cli's behavior."""
     if not getattr(args_ns, "why", False):
         return
-    print(f"\n[why] {header}")
+    _eprint(f"\n[why] {header}")
     for line in lines:
-        print(f"  {line}")
+        _eprint(f"  {line}")
 
 
 def _now_iso() -> str:
@@ -899,6 +900,116 @@ def _fetch_url(url: str, timeout: int = 30) -> bytes:
 # ---------------------------------------------------------------------------
 # Command: init
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Command: demo  (zero-config first-experience; mirrors README "Quick tour")
+# ---------------------------------------------------------------------------
+
+
+_DEMO_HOUSE_NDA = """\
+# House Mutual NDA
+
+## 1. Purpose
+
+The parties wish to evaluate a potential business relationship.
+
+## 2. Term and Survival
+
+This agreement terminates two years after the Effective Date.
+Confidentiality obligations survive for three years thereafter.
+
+## 3. Confidentiality
+
+Each party will protect the other's Confidential Information with
+reasonable care.
+"""
+
+_DEMO_YC_NDA = """\
+# YC-Style Startup NDA
+
+## 1. Purpose
+
+Exploring a relationship.
+
+## 2. Term and Survival
+
+One year from the Effective Date.
+
+## 3. Confidentiality
+
+Reasonable care.
+"""
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    """Zero-config first-experience: set up a demo vault, upload two
+    fixture NDAs, compose + swap a clause, and print the result. The
+    vault is created at the path specified by --path (default:
+    /tmp/template-vault-demo). Matches the pattern used by sibling
+    CLIs (compare-cli --demo, draft-cli --demo)."""
+    import tempfile
+    if args.path:
+        demo_root = Path(args.path).resolve()
+    else:
+        demo_root = Path(tempfile.gettempdir()) / "template-vault-demo"
+
+    if demo_root.exists() and not args.clean:
+        if any(demo_root.iterdir()):
+            raise VaultError(
+                f"Demo path is not empty: {demo_root}. "
+                f"Re-run with `--clean` to wipe it, or pass `--path PATH` "
+                f"to use a different location."
+            )
+    if args.clean and demo_root.exists():
+        import shutil
+        shutil.rmtree(demo_root)
+
+    demo_root.mkdir(parents=True, exist_ok=True)
+    prev_cwd = Path.cwd()
+    try:
+        os.chdir(demo_root)
+        # 1. init
+        print(_green("\n[1/5]") + " Initializing vault...")
+        main(["init"])
+        # 2. upload two fixtures
+        print(_green("\n[2/5]") + " Uploading two NDA fixtures...")
+        house = demo_root / "house.md"
+        yc = demo_root / "yc.md"
+        house.write_text(_DEMO_HOUSE_NDA)
+        yc.write_text(_DEMO_YC_NDA)
+        main(["upload", str(house),
+              "--category", "nda", "--name", "house",
+              "--summary", "House mutual NDA (demo)",
+              "--non-interactive"])
+        main(["upload", str(yc),
+              "--category", "nda", "--name", "yc",
+              "--summary", "YC-style startup NDA (demo)",
+              "--non-interactive"])
+        # 3. clauses listing
+        print(_green("\n[3/5]") + " Clauses detected in nda/house:")
+        main(["clauses", "nda/house"])
+        # 4. compose + swap
+        print(_green("\n[4/5]") + " Composing a derived NDA and swapping its Term clause...")
+        main(["compose", "--base", "nda/house", "--as", "nda/house-startup"])
+        main(["swap", "nda/house-startup",
+              "--clause", "Term and Survival",
+              "--from", "nda/yc"])
+        # 5. inspect
+        print(_green("\n[5/5]") + " Result -- the swap is recorded in clause_overrides:")
+        main(["info", "nda/house-startup"])
+
+        print()
+        print(_green("Demo complete.") + f" The vault lives at {demo_root}.")
+        print("Try next:")
+        print(f"  cd {demo_root}")
+        print(f"  template-vault list")
+        print(f"  template-vault history nda/house-startup")
+        print(f"  template-vault doctor")
+        print(f"  template-vault stats")
+        return 0
+    finally:
+        os.chdir(prev_cwd)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -3091,6 +3202,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"template-vault {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
+    p_demo = sub.add_parser("demo",
+        help="Zero-config first-experience: set up a vault, upload two NDAs, "
+             "compose + swap a clause, and print the result.")
+    p_demo.add_argument("--path",
+        help="Where to create the demo vault (default: $TMPDIR/template-vault-demo)")
+    p_demo.add_argument("--clean", action="store_true",
+        help="Wipe the demo dir if it exists before initializing.")
+    p_demo.set_defaults(func=cmd_demo)
+
     p_init = sub.add_parser("init", help="Initialize a vault in the current dir")
     p_init.add_argument("--bare", action="store_true", help="git init --bare")
     p_init.add_argument("--path", help="Target path (default: cwd)")
@@ -3226,9 +3346,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Skip the --with-content confirmation prompt")
     p_ask.add_argument("--json", action="store_true",
                        help="Also print a JSON blob of {query, candidates, answer}")
-    p_ask.add_argument("--quiet", action="store_true",
+    p_ask.add_argument("-q", "--quiet", "--silent", action="store_true",
+                       dest="quiet",
                        help="With --json, suppress the human-readable answer "
-                            "(stdout becomes JSON only)")
+                            "(stdout becomes JSON only). `--silent` and `-q` "
+                            "are aliases for sibling-CLI consistency.")
     p_ask.add_argument("--execute", action="store_true",
                        help="Parse the LLM response for `template-vault compose` / "
                             "`swap` lines and run them. Other subcommands are skipped.")
@@ -3268,8 +3390,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc = sub.add_parser("doctor", help="Vault integrity check + quality warnings")
     p_doc.add_argument("--strict", action="store_true",
                        help="Exit non-zero on quality warnings too (default: only on issues)")
-    p_doc.add_argument("--quiet-warnings", action="store_true",
-                       help="Suppress quality warnings; show only hard issues")
+    p_doc.add_argument("-q", "--quiet-warnings", "--silent-warnings",
+                       action="store_true", dest="quiet_warnings",
+                       help="Suppress quality warnings; show only hard issues. "
+                            "`-q` and `--silent-warnings` are aliases.")
     p_doc.set_defaults(func=cmd_doctor)
 
     p_comp = sub.add_parser("completion", help="Emit a shell completion script (bash or zsh)")
