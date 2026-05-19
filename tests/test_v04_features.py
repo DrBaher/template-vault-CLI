@@ -193,6 +193,94 @@ class CompletionTests(CliCase):
         self.assertNotEqual(code, 0)
         self.assertIn("fish", err.lower())
 
+    def test_completion_bash_includes_smart_dispatch_logic(self):
+        """The bash script must contain the smart-completion branches that
+        call back into `template-vault __complete`."""
+        code, out, _err = run_cli("completion", "bash")
+        self.assertEqual(code, 0)
+        self.assertIn("template-vault __complete refs", out)
+        self.assertIn("template-vault __complete versions", out)
+        self.assertIn("template-vault __complete categories", out)
+        # Subcommands that take a ref should be enumerated in the case stmt.
+        self.assertIn("get|info|diff|history|clauses|swap", out)
+
+
+class CompleteHandlerTests(CliCase):
+    """The hidden __complete handler used by the shell completion scripts."""
+
+    def test_complete_refs_lists_all_templates(self):
+        from tests._helpers import (
+            temp_vault, add_template,
+            SAMPLE_NDA_MUTUAL, SAMPLE_LICENSING,
+        )
+        with temp_vault() as v:
+            add_template(v, "nda", "house", SAMPLE_NDA_MUTUAL)
+            add_template(v, "nda", "yc", SAMPLE_NDA_MUTUAL)
+            add_template(v, "licensing", "saas", SAMPLE_LICENSING)
+            code, out, _err = run_cli("__complete", "refs")
+            self.assertEqual(code, 0)
+            refs = out.strip().split("\n")
+            self.assertIn("nda/house", refs)
+            self.assertIn("nda/yc", refs)
+            self.assertIn("licensing/saas", refs)
+
+    def test_complete_categories_dedups(self):
+        from tests._helpers import (
+            temp_vault, add_template,
+            SAMPLE_NDA_MUTUAL, SAMPLE_LICENSING,
+        )
+        with temp_vault() as v:
+            add_template(v, "nda", "house", SAMPLE_NDA_MUTUAL)
+            add_template(v, "nda", "yc", SAMPLE_NDA_MUTUAL)
+            add_template(v, "licensing", "saas", SAMPLE_LICENSING)
+            code, out, _err = run_cli("__complete", "categories")
+            self.assertEqual(code, 0)
+            cats = out.strip().split("\n")
+            self.assertEqual(sorted(cats), ["licensing", "nda"])
+
+    def test_complete_versions_lists_version_ids(self):
+        from tests._helpers import (
+            temp_vault, add_template,
+            SAMPLE_NDA_MUTUAL,
+        )
+        with temp_vault() as v:
+            add_template(v, "nda", "x", SAMPLE_NDA_MUTUAL, version="v1")
+            # Manually add a v2 entry so the listing has more than one.
+            import json as _json
+            meta = _json.loads((v / "nda" / "x" / "meta.json").read_text())
+            meta["versions"].append({"id": "v2", "added": "2026-05-19",
+                                      "supersedes": "v1", "changelog": "x"})
+            (v / "nda" / "x" / "meta.json").write_text(
+                _json.dumps(meta, indent=2) + "\n"
+            )
+            (v / "nda" / "x" / "v2.md").write_text("# v2")
+            code, out, _err = run_cli("__complete", "versions", "nda/x")
+            self.assertEqual(code, 0)
+            self.assertEqual(out.strip().split("\n"), ["v1", "v2"])
+
+    def test_complete_versions_unknown_ref_silent_exit_zero(self):
+        from tests._helpers import temp_vault
+        with temp_vault():
+            code, out, _err = run_cli("__complete", "versions", "nda/no-such")
+            # Silent exit (no error during shell tab-completion).
+            self.assertEqual(code, 0)
+            self.assertEqual(out.strip(), "")
+
+    def test_complete_without_vault_silent_exit_zero(self):
+        """Tab-completing outside any vault should NOT print an error."""
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as d:
+            prev = os.getcwd()
+            try:
+                os.chdir(d)
+                code, out, err = run_cli("__complete", "refs")
+                self.assertEqual(code, 0)
+                self.assertEqual(out, "")
+                # Nothing on stderr either — silent.
+                self.assertEqual(err, "")
+            finally:
+                os.chdir(prev)
+
 
 class ColorTests(CliCase):
     def test_no_color_env_disables_ansi(self):

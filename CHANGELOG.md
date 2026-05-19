@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## Unreleased
+
+### Added
+- **Smart shell completion.** Bash and zsh scripts now call back into
+  the CLI via a hidden `template-vault __complete` handler. Tab-complete
+  `<category>/<name>` refs against the actual vault, version IDs after
+  `@`, and category names after `--category` / `--base` / `--from` /
+  `--as`. Hand-rolled (no `argcomplete` dep). Empty/no-vault contexts
+  silently return zero, so tab-completion doesn't print errors in the
+  user's shell.
+- **`make release VERSION=X.Y.Z`** (and `python scripts/release.py X.Y.Z`).
+  One command does: validate version format, refuse on a dirty working
+  tree, refuse if the changelog has no `## Unreleased` section, bump
+  `pyproject.toml` + `__version__`, promote the CHANGELOG heading,
+  commit, and tag. `--dry-run` shows the plan without writing.
+  `--no-tag` commits but skips the tag step. 12 tests in
+  `tests/test_release_script.py` exercise the file-mutation functions
+  against temp copies.
+
+### Stats
+Tests: 222 → **240** (+18: 6 completion-handler tests, 12 release-script
+tests). Coverage 87%. `mypy --strict`: clean.
+
 ## 0.4.4 — 2026-05-19
 
 Real-contract fixture corpus + a Roman-numeral bug it surfaced.
