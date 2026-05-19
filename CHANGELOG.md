@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.1 — 2026-05-17
+
+Small alignment patch against
+[compare-cli's clause-detection.md spec v1.0](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md),
+plus suite cross-referencing updates. No new commands; no migration
+required.
+
+### Changed
+- **ALL-CAPS heading detection** now accepts 3-character lines (was 4)
+  to match the spec. The blank-line-frame requirement and the
+  no-leading-`[` exclusion stay (template-vault is intentionally
+  stricter on T3 to avoid false positives in real-world prose). Single-
+  token ALL-CAPS lines additionally need ≥ 4 ASCII letters (so `TER` is
+  still rejected; `TERM` qualifies; `IP RIGHTS` qualifies as multi-token).
+- **`[BRACKETED]` lines** can no longer accidentally match ALL-CAPS
+  detection. The regex already required `[A-Z]` as the first character,
+  but tests now lock the behavior.
+
+### Added
+- New reference doc
+  [docs/clause-detection-divergence.md](docs/clause-detection-divergence.md)
+  enumerating all 10 divergences between this repo's implementation and
+  the compare-cli spec, with recommended direction for each
+  (align here / align there / accept divergence).
+- README, FAQ, and ARCHITECTURE.md now cross-reference the full
+  contract-operations CLI suite at [cli.drbaher.com](https://cli.drbaher.com):
+  template-vault → draft → review → compare → convert → sign. Adds
+  draft-cli and compare-cli to the suite listing (both shipped after
+  v0.4.0).
+
+### Stats
+Tests: 164 → **167** (+3). Coverage unchanged at ~83%.
+
 ## 0.4.0 — 2026-05-11
 
 Distribution + ergonomics + tooling round. Closes the install loop

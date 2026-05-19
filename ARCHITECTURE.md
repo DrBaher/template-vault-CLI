@@ -147,12 +147,19 @@ v0.1.1 extracted the rule as a portable language-agnostic spec:
 > [DrBaher/compare-cli/docs/clause-detection.md](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)
 > (rule v1.0)
 
-The two implementations are **close but not byte-identical** — for
-example, this repo requires ALL-CAPS lines be surrounded by blank lines
-and have ≥ 4 chars; compare-cli's spec allows ≥ 3 chars and doesn't
-require the blank-line frame. Reconciliation (picking one rule and
-bumping both implementations + the spec version in lockstep) is tracked
-as **future work**; no migration is forced by this citation.
+The two implementations are **close but not byte-identical**. The
+precise enumeration of all 10 divergences (with the recommended
+direction for each — align here, align there, or accept) lives at
+[docs/clause-detection-divergence.md](docs/clause-detection-divergence.md).
+TL;DR: three small alignments are recommended here (`{3,}` vs `{4,}`
+in ALL-CAPS, `[` exclusion, single-token strictness); two are
+recommended on the spec side; the remaining five (synthetic fallback,
+title-line inclusion, preamble handling, etc.) are load-bearing
+differences that should stay.
+
+Reconciliation isn't scheduled — both implementations work for their
+consumers. The pre-condition is a shared test fixture set with
+hand-labeled clause boundaries that both implementations run against.
 
 The shared posture — H2 > bold-prefix > ALL-CAPS > synthetic, strict
 cascade, normalized titles — is what both implementations guarantee.

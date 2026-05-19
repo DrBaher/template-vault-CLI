@@ -39,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -107,8 +107,16 @@ _BOLD_HEADING_RE = re.compile(
     r"\s*\*\*\s*$",
     re.MULTILINE,
 )
+# ALL-CAPS heading detection. Required: blank-line frame on both sides (so
+# inline shouts in prose don't qualify); ≥ 3 characters total; at least one
+# ASCII letter; doesn't start with `[` (so `[BRACKETED]` placeholders never
+# match). Single-token ALL-CAPS additionally requires ≥ 4 ASCII letters
+# (handled in _matches_to_clauses) — multi-token allows shorter individual
+# words. Tracks compare-cli's clause-detection.md spec, modulo the
+# blank-line frame which is intentionally stricter here. See
+# docs/clause-detection-divergence.md.
 _ALL_CAPS_HEADING_RE = re.compile(
-    r"(?:^|\n)\n([A-Z][A-Z0-9 \-/&,]{3,}[A-Z0-9])\s*\n\n",
+    r"(?:^|\n)\n([A-Z][A-Z0-9 \-/&,]{1,}[A-Z0-9])\s*\n\n",
 )
 
 # ---------------------------------------------------------------------------
@@ -500,10 +508,26 @@ def _detect_fallback_headings(text: str) -> List[Dict[str, Any]]:
     matches = list(_BOLD_HEADING_RE.finditer(text))
     if len(matches) >= 2:
         return _matches_to_clauses(text, matches, group=1)
-    matches = list(_ALL_CAPS_HEADING_RE.finditer(text))
+    # ALL-CAPS pass: regex catches the structural shape; this post-filter
+    # enforces the spec's single-token rule (single-token lines need >= 4
+    # ASCII letters, so "TER" doesn't qualify but "TERM" does). Multi-token
+    # lines have no per-token minimum.
+    raw_matches = list(_ALL_CAPS_HEADING_RE.finditer(text))
+    matches = [m for m in raw_matches if _qualifies_as_all_caps_heading(m.group(1))]
     if len(matches) >= 2:
         return _matches_to_clauses(text, matches, group=1)
     return []
+
+
+def _qualifies_as_all_caps_heading(title: str) -> bool:
+    """Apply the spec's single-token-min-4-letters rule on top of the
+    regex's structural match. Multi-token lines pass through."""
+    tokens = title.split()
+    if len(tokens) >= 2:
+        return True
+    # Single-token: count ASCII letters; need >= 4.
+    letters = sum(1 for ch in title if "A" <= ch <= "Z")
+    return letters >= 4
 
 
 def _matches_to_clauses(text: str, matches: List["re.Match[str]"],
