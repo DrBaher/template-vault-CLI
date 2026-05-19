@@ -188,3 +188,42 @@ This keeps the loop deterministic and reviewable.
 Configure the LLM via `~/.config/template-vault-cli/llm.json` (see
 `config/llm.json.example`). If you've already configured `nda-review-cli`,
 its config is reused so you don't have to set up two providers.
+
+---
+
+## 6. Integrity-drift detection across a working vault
+
+You inherited a vault from a teammate, or you want to make sure no one
+has edited a template file out from under `meta.json`. Three commands
+get you a clean baseline + ongoing tamper detection.
+
+```bash
+# 1. Establish the baseline. Walks every template / version, computes
+#    sha256 of each version file, records it in the version's meta entry.
+template-vault verify --update-hashes
+
+# 2. Audit hygiene: empty summaries, never-used templates, versions still
+#    without recorded hashes, dangling alias keys, version-number gaps.
+template-vault doctor
+
+# 3. From now on, `verify` (no flags) checks each file's actual hash
+#    against the recorded one and flags drift.
+template-vault verify
+```
+
+The output of `verify` is paste-friendly and exits non-zero on
+mismatch, so it's a one-liner CI gate:
+
+```bash
+template-vault verify --strict     # fails on missing-hash too
+```
+
+For an "everything healthy?" dashboard:
+
+```bash
+template-vault stats               # template counts, coverage, last activity
+template-vault stats --json | jq '.coverage'
+```
+
+`stats` and `doctor` complement each other: `stats` is "here's the
+shape of the vault," `doctor` is "here's what I'd fix."

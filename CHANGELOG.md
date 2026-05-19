@@ -4,6 +4,53 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.2 — 2026-05-19
+
+Polish round: long-tail coverage tests, a new `stats` command,
+`doctor` quality warnings, and three FAQ entries that close obvious
+documentation gaps.
+
+### Added
+- **`template-vault stats`** — single-screen vault dashboard:
+  category counts, version totals, import / composition counts,
+  coverage of summaries / tags / sha256, last-activity timestamp.
+  `--json` for scripts. Reuses `iter_templates`; no new schema.
+- **`doctor` quality warnings** — beyond the existing schema checks,
+  `doctor` now surfaces hygiene issues that don't break anything but
+  degrade UX:
+  - Templates with empty `summary` (kills `find` recall, weakens `ask`)
+  - Templates with no detected clauses (suggest the explicit `clauses`
+    map)
+  - Versions without recorded `sha256` (suggest `verify --update-hashes`)
+  - Templates never used (`use_count: 0` + `last_used: null` —
+    graveyard candidates)
+  - `--strict` makes warnings fail the exit code. `--quiet-warnings`
+    suppresses them, showing only hard issues.
+- **`list --verbose`** — multi-line output with truncated summary and
+  metadata bits on dimmed continuation lines.
+- **`list --json`** — structured results, matching the pattern from
+  `info --json` / `find --json` / `ask --json`.
+- **Global `--no-color`** — works on any subcommand. Sets `NO_COLOR=1`
+  internally before argparse runs.
+- Three new FAQ entries: "How do I migrate from a folder of `.docx`
+  files?", "Can I use it offline?", "How is this different from
+  `git submodule`?".
+- New GETTING_STARTED scenario 6: integrity-drift detection workflow
+  (verify + doctor + stats).
+
+### Changed
+- `doctor`'s output adds a `Quality warnings:` section after the
+  existing `Issues` listing. Backward compatible: clean vaults still
+  print `Status: OK` and exit 0.
+
+### Stats
+Tests: 167 → **202** (+35). Coverage 83% → **~87%** on
+`template_vault_cli.py` (added long-tail tests for `_llm_request`
+both providers, `cmd_init` failure paths, `cmd_sync`/`cmd_publish` git
+wrappers, `cmd_import` edge cases, `cmd_upload` flag combinations,
+`cmd_verify --strict` paths, list `--json`/`--verbose`, global
+`--no-color`).
+
 ## 0.4.1 — 2026-05-17
 
 Small alignment patch against
