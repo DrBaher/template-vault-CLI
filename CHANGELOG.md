@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.4.3 — 2026-05-19
+
+Quality round: property-based clause-detection tests + clean
+`mypy --strict` pass.
+
+### Added
+- **Property-based tests** (`tests/test_properties.py`) covering 9
+  invariants on `detect_clauses` and `find_clause_by_title`. Each
+  property runs ~50 generated cases with deterministic seeds, so
+  failures are reproducible. Stdlib-only (no `hypothesis` dep —
+  uses `random` + invariant assertions). Tests catch:
+  - Cascade priority (T1 > T2 > T3) — H2 doc with injected bold/CAPS
+    noise still returns only H2 clauses
+  - No clause overlap between adjacent detections
+  - `slice_clause_text` round-trips `text[start:end]`
+  - `_strip_clause_number` is idempotent
+  - Alias resolution symmetry (querying by alias == querying by canonical)
+  - Exact-match-beats-substring in `find_clause_by_title`
+  - T2 fallback never activates when T1 fires; T3 never activates when
+    T2 fires
+- **`mypy --strict` clean pass.** The codebase had partial type hints;
+  this round closes the gap. 10 small fixes: cast `json.loads`
+  returns where they feed typed dicts, parameterize bare `set` /
+  `subprocess.CompletedProcess` annotations, fix one shadowed
+  exception variable in `cmd_doctor`. Also added an explicit guard
+  in `cmd_upgrade` for the case where `derived_from` is set but
+  `forked_at_parent_version` isn't (was an `Optional[str]` reaching
+  a `str` parameter; now an explicit error with a doctor hint).
+- **`make typecheck`** runs `mypy --strict` against
+  `template_vault_cli.py`. Lazy-installs mypy on first run.
+- **New CI job** (`typecheck`) runs `mypy --strict` on every push and
+  PR. Matrix unchanged (Ubuntu × macOS × Python 3.9-3.12 still on
+  `unittest`); the new typecheck job runs once on Ubuntu Python 3.12.
+- `mypy>=1.10` added to the `[project.optional-dependencies] dev`
+  extra alongside `coverage>=7.0`.
+
+### Fixed
+- Subtle exception-variable shadow in `cmd_doctor`: an `except VaultError
+  as e:` was followed by a `for e in errs:` loop that re-used the same
+  name. Python deletes the exception binding after the except block, but
+  the reuse was confusing and mypy flagged it. Renamed the loop variable
+  to `msg` and the second except's binding to `exc`.
+
+### Stats
+Tests: 202 → **215** (+13). Coverage still 87%. `mypy --strict`: clean.
+
 ## 0.4.2 — 2026-05-19
 
 Polish round: long-tail coverage tests, a new `stats` command,
