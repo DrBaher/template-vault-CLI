@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## Unreleased
+
+### Changed
+- **Suite framing in README and FAQ matches sibling convention.** Audited
+  against all five other CLIs in the suite (`nda-review-cli`,
+  `compare-cli`, `draft-cli`, `docx2pdf-cli`, `sign-cli`); they all share
+  the same 4-CLI pipeline framing (`draft → review → convert → sign`)
+  and position auxiliary tools (compare, template-vault) separately. The
+  README and FAQ now match: `template-vault-cli` is described as the
+  **storage layer** that feeds the pipeline, with `compare-cli`
+  described as the auxiliary drift detector. Closes the
+  positioning-divergence gap the prior versions had.
+- **`-V` short flag for `--version`** — matches `nda-review-cli`,
+  `draft-cli`, `sign-cli`, and `compare-cli`. The full `--version` flag
+  continues to work unchanged.
+
+### Notes about other repos
+- `compare-cli`'s suite reference still says "template-vault-cli
+  (forthcoming)". Should be updated; that's their docs bug, not ours.
+- None of the four pipeline CLIs reference `template-vault-cli` in their
+  suite-chain header. They're frozen in a pre-template-vault narrative.
+  Worth opening issues against each to bring their READMEs in line.
+- `cli.drbaher.com` returns HTTP 403 from automated fetching, so the
+  audit couldn't verify the landing-page narrative matches. If it
+  doesn't, that's a separate fix in the site repo.
+
 ## 0.4.6 — 2026-05-19
 ### Added
 - **`template-vault demo`** — zero-config first-experience command.
