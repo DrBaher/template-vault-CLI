@@ -3,6 +3,13 @@
 > A Git-backed, **clause-aware** package manager for legal-document templates.
 > Public sources (Common Paper, YC SAFE, Bonterms) and your own house templates,
 > in one searchable, composable, version-tracked vault. Stdlib-only Python. MIT.
+>
+> Part of the [contract-operations CLI suite](https://cli.drbaher.com):
+> store (this repo) → [draft](https://github.com/DrBaher/draft-cli) →
+> [review](https://github.com/DrBaher/nda-review-cli) →
+> [compare](https://github.com/DrBaher/compare-cli) →
+> [convert](https://github.com/DrBaher/docx2pdf-cli) →
+> [sign](https://github.com/DrBaher/sign-cli).
 
 **Why it's different from a folder of `.docx` files:** the CLI treats clauses
 as first-class structural objects with provenance. You can fork a template,
@@ -192,16 +199,35 @@ full schema and the clause-detection regex.
 
 ## Suite
 
-`template-vault-cli` belongs to a small contract-operations toolkit:
+`template-vault-cli` belongs to the **contract-operations CLI suite** at
+[cli.drbaher.com](https://cli.drbaher.com). The full pipeline:
 
-- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** — drafts,
-  reviews, negotiates NDAs against a house policy.
-- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** — DOCX → PDF.
-- **[sign-cli](https://github.com/DrBaher/sign-cli)** — multi-provider e-signature
-  with hash-chained audit logs.
+- **`template-vault-cli`** (this repo) — store, search, fork, swap clauses.
+- **[draft-cli](https://github.com/DrBaher/draft-cli)** — fill template
+  placeholders (`[Party A]`, `[Effective Date]`, ...) to produce a ready-to-send draft.
+- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** — review,
+  redline, and negotiate NDAs against a house policy.
+- **[compare-cli](https://github.com/DrBaher/compare-cli)** — clause-aware
+  drift detection between two contract versions. Pre-signature gate.
+- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** — DOCX → PDF
+  conversion with backend transparency.
+- **[sign-cli](https://github.com/DrBaher/sign-cli)** — multi-provider
+  e-signature with hash-chained audit logs.
 
-Future integration: `nda-review-cli draft --template-name <category>/<name>`
-will resolve via `template-vault get` if a vault is configured.
+End-to-end pipeline shape:
+
+```
+template-vault get <ref>
+  | draft --params deal.json          # fill placeholders → draft
+  | nda-review review --file -        # review → revised draft
+  | compare --against original.md     # drift gate → revised v2
+  | docx2pdf - draft.pdf              # → PDF
+  | sign send --signers ...           # → executed, audited
+```
+
+`template-vault-cli` and `compare-cli` share a portable **clause-detection
+spec** ([compare-cli/docs/clause-detection.md](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)).
+See [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for the divergence notes.
 
 ## License
 

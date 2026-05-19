@@ -75,6 +75,44 @@ class FallbackHeadingTests(unittest.TestCase):
         text = "Some text.\n\n**1. Maybe a heading?**\n\nMore text."
         self.assertEqual(tvc.detect_clauses(text), [])
 
+    def test_all_caps_minimum_three_chars(self):
+        # Spec v1.0: ALL-CAPS heading requires >= 3 chars (was >= 4 here).
+        # Multi-token line "IP RIGHTS" qualifies even though "IP" alone wouldn't.
+        text = "Preamble.\n\nIP RIGHTS\n\nFirst body.\n\nTERM\n\nSecond body.\n"
+        cs = tvc.detect_clauses(text)
+        titles = [c["title"] for c in cs]
+        self.assertIn("IP RIGHTS", titles)
+        self.assertIn("TERM", titles)
+
+    def test_all_caps_single_token_under_four_letters_rejected(self):
+        # Spec v1.0: single-token ALL-CAPS lines need >= 4 ASCII letters.
+        # "TER" (3 letters) doesn't qualify even though it satisfies the
+        # >= 3 chars / blank-line frame structural test.
+        text = "Preamble.\n\nTER\n\nFirst body.\n\nIP\n\nSecond body.\n"
+        cs = tvc.detect_clauses(text)
+        # Both candidates fail the single-token-min-4-letters rule, so
+        # fallback finds nothing and detect_clauses returns [].
+        self.assertEqual(cs, [])
+
+    def test_all_caps_bracketed_line_does_not_match(self):
+        # `[BRACKETED]` placeholders shouldn't be picked up by ALL-CAPS
+        # detection. The regex anchors on `[A-Z]` as first char so `[` is
+        # excluded naturally; this test guards the behavior.
+        text = (
+            "Preamble.\n\n"
+            "[BRACKETED PLACEHOLDER]\n\n"
+            "First body.\n\n"
+            "CONFIDENTIALITY OBLIGATIONS\n\n"
+            "Second body.\n"
+        )
+        cs = tvc.detect_clauses(text)
+        titles = [c["title"] for c in cs]
+        self.assertNotIn("BRACKETED PLACEHOLDER", titles)
+        self.assertNotIn("[BRACKETED PLACEHOLDER]", titles)
+        # The only heading found is single-line, so the >= 2 threshold
+        # means fallback commits nothing.
+        self.assertEqual(cs, [])
+
 
 if __name__ == "__main__":
     unittest.main()
