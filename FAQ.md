@@ -94,19 +94,44 @@ This is also a privacy decision: an LLM-only workflow forces you to send
 template bodies to a third party for every operation. A structural workflow
 keeps the deterministic 95% local.
 
-## What's the relationship to nda-review-cli?
+## What's the relationship to the other CLIs in the suite?
 
-`nda-review-cli` reviews and negotiates NDAs against a house policy.
-`template-vault-cli` stores and composes the templates `nda-review-cli`
-draws from. Future integration:
+`template-vault-cli` is one of six tools in the
+[contract-operations CLI suite](https://cli.drbaher.com). Each does one
+piece of the pre-execution pipeline; they compose via stdin/stdout +
+deterministic JSON contracts.
 
-```bash
-nda-review-cli draft --template-name nda/house-mutual
+- **`template-vault-cli`** stores templates (and clauses) with provenance.
+- **[draft-cli](https://github.com/DrBaher/draft-cli)** fills the placeholders
+  in a template to produce a draft (`[Party A]` → `"Acme Corporation"`, etc.).
+- **[nda-review-cli](https://github.com/DrBaher/nda-review-cli)** reviews and
+  negotiates against a house policy. The integration with this repo is via
+  `info --json` and `get` — nda-review-cli can pull clause structure and
+  preferred-language references from a configured vault.
+- **[compare-cli](https://github.com/DrBaher/compare-cli)** does
+  clause-aware drift detection between two versions of a contract. Useful as
+  a pre-signature gate. Shares the [clause-detection spec](https://github.com/DrBaher/compare-cli/blob/main/docs/clause-detection.md)
+  with this repo (see [ARCHITECTURE.md](ARCHITECTURE.md#cross-repo-spec) for
+  divergence notes).
+- **[docx2pdf-cli](https://github.com/DrBaher/docx2pdf-cli)** + **[sign-cli](https://github.com/DrBaher/sign-cli)**
+  handle the conversion and signing steps after review.
+
+Typical pipeline (each step is one of the CLIs):
+
+```
+get template → fill placeholders → review → diff vs original → convert → sign
 ```
 
-… would call `template-vault get nda/house-mutual` under the hood if a vault
-is configured. Today this isn't wired up — the integration is one-way and
-documented as future work.
+A reasonable end-to-end invocation:
+
+```bash
+template-vault get nda/house-mutual \
+  | draft --params deal-acme.json \
+  | nda-review review --file - --policy nda \
+  | compare --against /tmp/original.md \
+  | docx2pdf - draft-acme.pdf \
+  | sign-cli send --signers a@acme.com,b@vendor.com
+```
 
 ## Does it support encrypted vaults?
 
