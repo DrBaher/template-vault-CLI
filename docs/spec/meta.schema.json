@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/meta.schema.json",
+  "title": "template-vault meta.json schema (v1)",
+  "description": "Per-template metadata stored at <vault>/<category>/<name>/meta.json. The vault layer (storage) of the contract-operations CLI suite.",
+  "type": "object",
+  "required": ["name", "category", "latest_version", "versions"],
+  "properties": {
+    "name":     {"type": "string", "minLength": 1},
+    "category": {"type": "string", "minLength": 1},
+    "latest_version": {"type": "string", "pattern": "^v\\d+$"},
+    "versions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id":          {"type": "string", "pattern": "^v\\d+$"},
+          "added":       {"type": "string", "format": "date"},
+          "supersedes":  {"type": ["string", "null"]},
+          "supersedes_by": {"type": "string"},
+          "changelog":   {"type": "string"},
+          "sha256":      {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "amended":     {"type": "string", "format": "date"}
+        }
+      }
+    },
+    "jurisdiction": {"type": "array", "items": {"type": "string"}},
+    "party_type":   {"type": "array", "items": {"type": "string"}},
+    "deal_type":    {"type": "array", "items": {"type": "string"}},
+    "tags":         {"type": "array", "items": {"type": "string"}},
+    "owner":        {"type": ["string", "null"]},
+    "license":      {"type": ["string", "null"]},
+    "source":       {"type": ["string", "null"], "format": "uri"},
+    "uploaded_by":  {"type": ["string", "null"]},
+    "use_count":    {"type": "integer", "minimum": 0},
+    "last_used":    {"type": ["string", "null"], "format": "date"},
+    "summary":      {"type": "string"},
+    "attribution":  {"type": "string"},
+    "derived_from": {"type": ["string", "null"]},
+    "forked_at_parent_version": {"type": ["string", "null"]},
+    "clauses": {
+      "description": "Optional explicit clause map for templates that don't auto-detect.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "required": ["title", "anchor"],
+        "properties": {
+          "title":  {"type": "string"},
+          "anchor": {"type": "string"}
+        }
+      }
+    },
+    "clause_overrides": {
+      "description": "Provenance log for clauses swapped from other templates.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["clause_title", "source_template", "source_version", "swapped_at"],
+        "properties": {
+          "clause_title":   {"type": "string"},
+          "source_template":{"type": "string", "pattern": "^[^/]+/[^/]+$"},
+          "source_version": {"type": "string", "pattern": "^v\\d+$"},
+          "swapped_at":     {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "clause_aliases": {
+      "description": "Map from canonical clause title to alternate accepted names.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  }
+}

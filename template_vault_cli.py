@@ -760,8 +760,13 @@ def _load_llm_config(args_ns: argparse.Namespace) -> Dict[str, Any]:
     """
     cfg: Dict[str, Any] = {}
     candidates = [
+        # Suite-wide shared location (preferred). See docs/INTEROP.md.
+        Path.home() / ".config" / "contract-ops" / "llm.json",
+        # Legacy: original nda-review-cli location (kept for backwards-compat).
         Path.home() / ".config" / "nda-review-cli" / "llm.json",
+        # Legacy: this repo's per-CLI location (kept for backwards-compat).
         Path.home() / ".config" / "template-vault-cli" / "llm.json",
+        # Repo-local override (handy for `make smoke` and dev).
         Path.cwd() / "config" / "llm.json",
     ]
     for p in candidates:

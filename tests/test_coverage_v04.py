@@ -45,6 +45,50 @@ class _FakeResponse:
         return self._body
 
 
+class LlmConfigLookupTests(unittest.TestCase):
+    """Cover the lookup order in _load_llm_config, including the new
+    ~/.config/contract-ops/ shared location added in v0.4.8 per INTEROP.md."""
+
+    def test_contract_ops_dir_wins_over_per_cli_dirs(self):
+        import tempfile
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as fake_home:
+            # Lay down three candidate config files; the suite-shared one
+            # should win regardless of the others.
+            for sub, marker in (
+                ("contract-ops", "shared"),
+                ("nda-review-cli", "nda-review"),
+                ("template-vault-cli", "tv"),
+            ):
+                d = os.path.join(fake_home, ".config", sub)
+                os.makedirs(d)
+                with open(os.path.join(d, "llm.json"), "w") as f:
+                    json.dump({"provider": "anthropic", "api_key": marker}, f)
+            with mock.patch.dict(os.environ, {"HOME": fake_home}, clear=False):
+                # Path.home() honors $HOME on POSIX.
+                with mock.patch("template_vault_cli.Path.home",
+                                return_value=Path(fake_home)):
+                    cfg = tvc._load_llm_config(Namespace())
+            self.assertEqual(cfg.get("api_key"), "shared",
+                              "Suite-wide ~/.config/contract-ops/llm.json "
+                              "should be preferred over per-CLI dirs.")
+
+    def test_falls_back_to_legacy_locations(self):
+        """When the new suite-shared file is absent, fall back to the
+        legacy per-CLI locations (in order)."""
+        import tempfile
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as fake_home:
+            d = os.path.join(fake_home, ".config", "nda-review-cli")
+            os.makedirs(d)
+            with open(os.path.join(d, "llm.json"), "w") as f:
+                json.dump({"provider": "openai", "api_key": "legacy"}, f)
+            with mock.patch("template_vault_cli.Path.home",
+                            return_value=Path(fake_home)):
+                cfg = tvc._load_llm_config(Namespace())
+            self.assertEqual(cfg.get("api_key"), "legacy")
+
+
 class LlmRequestTests(unittest.TestCase):
     """Cover both provider branches + every error path in _llm_request."""
 

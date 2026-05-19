@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/stats-json.schema.json",
+  "title": "template-vault stats --json output schema (v1)",
+  "type": "object",
+  "required": [
+    "vault_root", "created", "categories", "templates",
+    "versions_total", "coverage"
+  ],
+  "properties": {
+    "vault_root":     {"type": "string"},
+    "created":        {"type": ["string", "null"]},
+    "categories": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "templates":       {"type": "integer", "minimum": 0},
+    "versions_total":  {"type": "integer", "minimum": 0},
+    "imports":         {"type": "integer", "minimum": 0},
+    "imports_hashed":  {"type": "integer", "minimum": 0},
+    "import_sources":  {"type": "array", "items": {"type": "string"}},
+    "compositions":    {"type": "integer", "minimum": 0},
+    "coverage": {
+      "type": "object",
+      "required": ["with_summary", "with_tags", "versions_with_sha256"],
+      "properties": {
+        "with_summary":         {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+        "with_tags":            {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
+        "versions_with_sha256": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2}
+      }
+    },
+    "last_activity":     {"type": ["string", "null"]},
+    "last_activity_ref": {"type": ["string", "null"]}
+  }
+}
