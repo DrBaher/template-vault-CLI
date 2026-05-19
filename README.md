@@ -32,8 +32,19 @@ Python 3.9+. **No third-party runtime dependencies** in the default install —
 
 ## 30-second first run
 
-Three commands, zero file authoring — fetches a real public template into a
-fresh vault:
+One command, zero config — runs the full compose-and-swap demo against
+inline fixture NDAs and leaves you a working vault to poke at:
+
+```bash
+template-vault demo
+```
+
+The demo sets up `$TMPDIR/template-vault-demo`, uploads two NDA
+fixtures, composes a derived template, swaps a clause, and prints the
+provenance. Add `--clean` to wipe a prior demo dir, or `--path PATH` to
+use a different location.
+
+Prefer to pull a real public template into a vault of your own?
 
 ```bash
 mkdir my-vault && cd my-vault
@@ -42,10 +53,9 @@ template-vault import common-paper-mutual-nda
 template-vault list
 ```
 
-You should see one template registered under `nda/`. From there, `find`,
-`info`, `clauses`, `compose`, and `swap` all work against it. See the
-[end-to-end tour](#end-to-end-clause-aware-composition) below for the
-composition workflow.
+From there, `find`, `info`, `clauses`, `compose`, and `swap` all work
+against it. See the [end-to-end tour](#end-to-end-clause-aware-composition)
+below for the composition workflow.
 
 ## What it does
 
@@ -120,6 +130,7 @@ Every swap appends to `clause_overrides` in `meta.json`. You — and `upgrade`
 ## Command reference
 
 ```
+template-vault demo                                # zero-config first-experience
 template-vault init [--bare] [--path .]
 template-vault upload <file>
     --category <cat> --name <slug>
@@ -163,9 +174,11 @@ template-vault completion bash | zsh    # emit shell completion script
 ```
 
 Most write-side commands (`compose`, `swap`, `upgrade`, `import`, `export`)
-accept `--why` for a short structured explanation of what they did. Color
+accept `--why` for a short structured explanation of what they did
+(printed to **stderr** so it doesn't pollute structured stdout). Color
 output auto-detects TTY; honors the [NO_COLOR](https://no-color.org/)
 convention, and `--no-color` works as a global flag on any subcommand.
+`--quiet` accepts `-q` / `--silent` as aliases.
 
 ## Privacy posture
 
