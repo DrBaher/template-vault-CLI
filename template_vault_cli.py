@@ -33,13 +33,13 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, cast
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -64,7 +64,7 @@ NO_CONFIRM_ENV = "NDA_VAULT_NO_CONFIRM"
 LLM_ENV_PREFIX = "NDA_VAULT_LLM_"
 
 REQUIRED_META_FIELDS = ("name", "category", "latest_version", "versions")
-META_DEFAULTS = {
+META_DEFAULTS: Dict[str, Any] = {
     "jurisdiction": [],
     "party_type": [],
     "deal_type": [],
@@ -206,7 +206,7 @@ def find_vault_root(start: Optional[Path] = None) -> Path:
 def read_vault_config(root: Path) -> Dict[str, Any]:
     cfg_path = root / VAULT_CONFIG_FILENAME
     try:
-        return json.loads(cfg_path.read_text())
+        return cast(Dict[str, Any], json.loads(cfg_path.read_text()))
     except FileNotFoundError as e:
         raise NotFoundError(f"Vault config missing: {cfg_path}") from e
     except json.JSONDecodeError as e:
@@ -261,7 +261,7 @@ def load_meta(t_dir: Path) -> Dict[str, Any]:
     if not mp.exists():
         raise NotFoundError(f"Missing {META_FILENAME} in {t_dir}")
     try:
-        meta = json.loads(mp.read_text())
+        meta = cast(Dict[str, Any], json.loads(mp.read_text()))
     except json.JSONDecodeError as e:
         raise VaultError(f"Malformed {mp}: {e.msg}") from e
     return meta
@@ -661,7 +661,7 @@ def find_clause_by_title(clauses: List[Dict[str, Any]], title: str
             return c
     # Substring: collect distinct candidate clauses.
     matches: List[Dict[str, Any]] = []
-    seen_starts: set = set()
+    seen_starts: Set[int] = set()
     for c in clauses:
         candidates = [c["title"].lower()] + list(c.get("aliases") or [])
         if any(needle in cand for cand in candidates):
@@ -710,7 +710,7 @@ def replace_clause(text: str, target: Dict[str, Any], replacement_body: str) -> 
 
 
 def _git(args: List[str], cwd: Path, check: bool = True,
-         capture: bool = True) -> subprocess.CompletedProcess:
+         capture: bool = True) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
@@ -840,7 +840,7 @@ def _llm_request(cfg: Dict[str, Any], system: str, user: str,
         except (KeyError, TypeError) as e:
             raise VaultError(f"Unexpected Anthropic response shape: {e}") from e
     try:
-        return data["choices"][0]["message"]["content"]
+        return cast(str, data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as e:
         raise VaultError(f"Unexpected OpenAI-compatible response shape: {e}") from e
 
@@ -874,7 +874,7 @@ def load_sources_registry(override_path: Optional[Path] = None) -> Dict[str, Any
             raise VaultError(f"Sources registry not found: {p}")
         return {"schema_version": SCHEMA_VERSION, "sources": []}
     try:
-        return json.loads(p.read_text())
+        return cast(Dict[str, Any], json.loads(p.read_text()))
     except json.JSONDecodeError as e:
         raise VaultError(f"Malformed sources registry {p}: {e.msg}") from e
 
@@ -883,7 +883,7 @@ def _fetch_url(url: str, timeout: int = 30) -> bytes:
     req = urllib.request.Request(
         url, headers={"User-Agent": f"template-vault-cli/{__version__}"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        return cast(bytes, resp.read())
 
 
 # ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ def _docx_to_markdown(src: Path) -> str:
     paragraphs → prose lines. Lazily imports python-docx; raises VaultError
     with install instructions if the extra isn't installed."""
     try:
-        import docx as _docx  # type: ignore[import-not-found]
+        import docx as _docx  # type: ignore[import-not-found, unused-ignore]
     except ImportError as e:
         raise VaultError(
             "Uploading .docx requires the optional [docx] extra. "
@@ -987,7 +987,7 @@ def _markdown_to_docx(text: str, dest: Path) -> None:
     a heading at the corresponding level. Blank lines preserved. All other
     lines become body paragraphs. Lazily imports python-docx."""
     try:
-        import docx as _docx  # type: ignore[import-not-found]
+        import docx as _docx  # type: ignore[import-not-found, unused-ignore]
     except ImportError as e:
         raise VaultError(
             "Exporting to .docx requires the optional [docx] extra. "
@@ -1758,10 +1758,10 @@ def cmd_compare_clauses(args: argparse.Namespace) -> int:
         for k, label in labels:
             ac = a_by_repr[k]
             bc = b_by_repr[k]
-            a_body = _strip_header_line(slice_clause_text(a_text, ac))
-            b_body = _strip_header_line(slice_clause_text(b_text, bc))
-            ratio = difflib.SequenceMatcher(None, a_body, b_body).ratio()
-            marker = "identical" if a_body == b_body else f"sim={ratio:.2f}"
+            a_body_str = _strip_header_line(slice_clause_text(a_text, ac))
+            b_body_str = _strip_header_line(slice_clause_text(b_text, bc))
+            ratio = difflib.SequenceMatcher(None, a_body_str, b_body_str).ratio()
+            marker = "identical" if a_body_str == b_body_str else f"sim={ratio:.2f}"
             print(f"  - {label.ljust(width)}    [{marker}]")
     print()
     print(f"## Only in {a_label} ({len(only_a)})")
@@ -1822,11 +1822,16 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         )
     meta = load_meta(t_dir)
     parent_ref = meta.get("derived_from")
-    parent_v_at_fork = meta.get("forked_at_parent_version")
+    parent_v_at_fork: Optional[str] = meta.get("forked_at_parent_version")
     if not parent_ref:
         raise VaultError(
             f"{cat}/{name} has no parent (derived_from is null). "
             "Only composed/derived templates can be upgraded."
+        )
+    if not parent_v_at_fork:
+        raise VaultError(
+            f"{cat}/{name} has derived_from but no forked_at_parent_version. "
+            "meta.json is malformed; run `template-vault doctor`."
         )
     p_cat, p_name, _ = parse_ref(parent_ref)
     p_dir = template_dir(root, p_cat, p_name)
@@ -2695,7 +2700,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
     last_activity: Optional[str] = None
     last_activity_ref: Optional[str] = None
 
-    sources_set: set = set()
+    sources_set: Set[str] = set()
     for cat, name, _path, meta in iter_templates(root):
         by_cat[cat] = by_cat.get(cat, 0) + 1
         vs = meta.get("versions") or []
@@ -2799,13 +2804,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 issues.append(f"meta.json error in {cat_dir.name}/{t_dir.name}: {e}")
                 continue
             errs = validate_meta(meta)
-            for e in errs:
-                issues.append(f"{cat_dir.name}/{t_dir.name}: {e}")
+            for msg in errs:
+                issues.append(f"{cat_dir.name}/{t_dir.name}: {msg}")
             # Latest pointer must point at a real file
             try:
                 resolve_version_file(t_dir, meta, None)
-            except VaultError as e:
-                issues.append(f"{cat_dir.name}/{t_dir.name}: latest_version unreachable ({e})")
+            except VaultError as exc:
+                issues.append(f"{cat_dir.name}/{t_dir.name}: latest_version unreachable ({exc})")
             # Version-numbering gaps (vN sequence)
             ids = [v.get("id") for v in meta.get("versions") or []]
             if all(isinstance(i, str) and re.fullmatch(r"v\d+", i) for i in ids):
