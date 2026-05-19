@@ -4,8 +4,7 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
-## Unreleased
-
+## 0.4.8 — 2026-05-19
 ### Added — cross-CLI interop deliverables
 - **Six JSON Schemas in `docs/spec/`** documenting the data contracts
   template-vault produces: `meta.schema.json`, `vault-config.schema.json`,
