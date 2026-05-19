@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/vault-config.schema.json",
+  "title": "template-vault .vault.json schema (v1)",
+  "description": "Top-level vault config. Read at every command invocation; layered over per-template meta.json via load_meta_resolved.",
+  "type": "object",
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "created":        {"type": "string", "format": "date"},
+    "defaults":       {"type": "object"},
+    "sources":        {"type": "array"},
+    "pinned_source_hashes": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    },
+    "template_defaults": {
+      "description": "Partial meta.json; absent/empty per-template fields fall through to these.",
+      "type": "object"
+    },
+    "clause_aliases": {
+      "description": "Vault-wide canonical-title -> aliases map. Unioned with per-template clause_aliases.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string"}
+      }
+    }
+  }
+}

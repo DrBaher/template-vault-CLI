@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/history-json.schema.json",
+  "title": "template-vault history --json output schema (v1)",
+  "type": "object",
+  "required": ["ref", "latest_version", "events"],
+  "properties": {
+    "ref":            {"type": "string", "pattern": "^[^/]+/[^/]+$"},
+    "latest_version": {"type": ["string", "null"]},
+    "derived_from":   {"type": ["string", "null"]},
+    "forked_at_parent_version": {"type": ["string", "null"]},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "kind"],
+        "properties": {
+          "date": {"type": "string"},
+          "kind": {"type": "string", "enum": ["version", "swap"]},
+          "id":          {"type": "string"},
+          "added":       {"type": "string"},
+          "supersedes":  {"type": ["string", "null"]},
+          "changelog":   {"type": "string"},
+          "sha256":      {"type": "string"},
+          "amended":     {"type": "string"},
+          "clause_title":   {"type": "string"},
+          "source_template":{"type": "string"},
+          "source_version": {"type": "string"},
+          "swapped_at":     {"type": "string"}
+        }
+      }
+    }
+  }
+}

@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## Unreleased
+
+### Added — cross-CLI interop deliverables
+- **Six JSON Schemas in `docs/spec/`** documenting the data contracts
+  template-vault produces: `meta.schema.json`, `vault-config.schema.json`,
+  `info-json.schema.json`, `find-json.schema.json`, `history-json.schema.json`,
+  `stats-json.schema.json`. JSON Schema 2020-12. Stable since this version.
+  Downstream tools that consume these outputs (e.g., `nda-review-cli`
+  reading `info --json`) can validate against the schema files directly.
+- **`docs/INTEROP.md`** — the cross-CLI contract document. Citation
+  point for: (a) the six schemas above, (b) the shared LLM-config
+  lookup, (c) the UX conventions across the six-CLI suite
+  (`--why` to stderr, `--json` on stdout, `-q`/`--silent` aliases,
+  `--no-color`, color via NO_COLOR, `-V` short flag, exit codes,
+  suite-chain framing). Replaces the "ad-hoc convention by audit" loop
+  with a written contract sibling repos can link to.
+- **`~/.config/contract-ops/llm.json`** as the new preferred LLM-config
+  location, ahead of `~/.config/nda-review-cli/llm.json` and
+  `~/.config/template-vault-cli/llm.json` in the lookup order. Existing
+  config files keep working (fallback chain unchanged behind the new
+  preferred path). Sibling Python CLIs that adopt the same lookup order
+  give users a single config file across the suite.
+- **`make spec-check`** target lints `docs/spec/*.schema.json` files for
+  valid JSON.
+- **`tests/test_spec_conformance.py`** — locks the published schemas
+  against the live CLI output. For each `--json` command, every field
+  listed in the schema's `required` block must appear in real output;
+  for `meta.json` and `.vault.json`, same. Catches the most common
+  drift mode (code adds/removes a field without updating the schema,
+  or vice versa). Doesn't enforce types — that's downstream validators'
+  job. No `jsonschema` dependency added; stays stdlib-only.
+- **`docs/SIBLING-ISSUES.md`** — paste-ready issue bodies for the five
+  sibling repos to bring their READMEs / config lookup in line. Not
+  urgent; written so they can be opened any time.
+
+### Stats
+Tests: 243 → **252** (+9: 7 schema-conformance + 2 config-dir lookup).
+Coverage 88%. `mypy --strict`: clean. `make spec-check`: clean.
+
+This round closes the "perfect harmony" work as far as it can be done
+from inside one repo. The remaining items live in the sibling repos and
+are queued in `docs/SIBLING-ISSUES.md` for you to open when ready.
+
 ## 0.4.7 — 2026-05-19
 ### Changed
 - **Suite framing in README and FAQ matches sibling convention.** Audited
