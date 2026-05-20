@@ -18,6 +18,10 @@ class CatalogTests(unittest.TestCase):
         d = json.loads(res.stdout)
         self.assertEqual(d["name"], "template-vault-cli")
         self.assertEqual(d["bin"], "template-vault")
+        # Shared catalog contract: name, bin, version, description, exitCodes.
+        for field in ("version", "description", "exitCodes"):
+            self.assertIn(field, d)
+        self.assertEqual(d["exitCodes"]["0"], "success")
         names = {c["name"] for c in d["commands"]}
         for expected in ("demo", "init", "upload", "list", "find", "get",
                          "info", "compose", "swap", "ask"):

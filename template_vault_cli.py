@@ -3260,6 +3260,11 @@ def _catalog_for(parser: argparse.ArgumentParser) -> Dict[str, Any]:
         "version": __version__,
         "description": parser.description or "",
         "commands": commands,
+        "exitCodes": {
+            "0": "success",
+            "1": "a check reported problems (e.g. verify drift, doctor issues)",
+            "2": "invalid usage or an operation error (VaultError: bad ref, missing template, refused LLM send)",
+        },
     }
 
 
