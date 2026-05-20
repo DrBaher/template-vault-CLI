@@ -32,7 +32,7 @@ pip install 'template-vault-cli[docx]'          # +.docx ingestion (python-docx)
 Python 3.9+. **No third-party runtime dependencies** in the default install —
 `[docx]` adds `python-docx` only when you want to upload `.docx` files.
 
-## 30-second first run
+## Run this
 
 One command, zero config — runs the full compose-and-swap demo against
 inline fixture NDAs and leaves you a working vault to poke at:
@@ -58,6 +58,15 @@ template-vault list
 From there, `find`, `info`, `clauses`, `compose`, and `swap` all work
 against it. See the [end-to-end tour](#end-to-end-clause-aware-composition)
 below for the composition workflow.
+
+## Where to go next
+
+| If you are… | Start here |
+|---|---|
+| **A new user** evaluating the vault | [Run this](#run-this) above, then `template-vault init` and the [Command reference](#command-reference) |
+| **An LLM agent** driving the CLI | [AGENTS.md](AGENTS.md) → `template-vault --catalog json` → JSON Schemas in [docs/spec/](docs/spec/) |
+| **Composing templates** (fork + swap clauses) | [End-to-end: clause-aware composition](#end-to-end-clause-aware-composition) |
+| **Integrating with the suite** | [docs/INTEROP.md](docs/INTEROP.md) — the storage/output contract + shared LLM config |
 
 ## What it does
 
