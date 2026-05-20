@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "template-vault-cli"
 version = "0.4.8"
-description = "Git-backed, clause-aware legal-document template manager. Stdlib-only Python."
+description = "Git-backed, clause-aware legal-document template manager. Stdlib-only Python. Part of the contract-ops CLI suite."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -18,6 +18,10 @@ keywords = [
   "git",
   "vault",
   "clause-composition",
+  "contract-ops",
+  "agent-first",
+  "cli",
+  "legal-tech",
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -55,7 +59,7 @@ exclude_lines = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/DrBaher/template-vault-cli"
+Homepage = "https://cli.drbaher.com"
 Source = "https://github.com/DrBaher/template-vault-cli"
 Issues = "https://github.com/DrBaher/template-vault-cli/issues"
 Changelog = "https://github.com/DrBaher/template-vault-cli/blob/main/CHANGELOG.md"
