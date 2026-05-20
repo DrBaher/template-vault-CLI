@@ -17,7 +17,7 @@ nda-review-cli to adopt the shared `~/.config/contract-ops/` config dir.
 
 **Body:**
 
-The README's "Part of the contract-operations CLI suite" header lists
+The README's "Part of the contract-ops CLI suite" header lists
 draft → review → convert → sign but doesn't reference
 [template-vault-cli](https://github.com/DrBaher/template-vault-cli)
 (the storage layer that feeds `draft-cli` via `template-vault get <ref>`)
@@ -30,7 +30,7 @@ reframe (matches the convention now in template-vault-cli v0.4.7 and
 compare-cli's spec):
 
 ```
-> Part of the contract-operations CLI suite. **draft-cli** (fill placeholders) →
+> Part of the contract-ops CLI suite. **draft-cli** (fill placeholders) →
 > [**nda-review-cli**](...) (review, redline, negotiate) →
 > [**docx2pdf-cli**](...) (DOCX → PDF) →
 > [**sign-cli**](...) (signing + audit).
@@ -62,7 +62,7 @@ already integrates with via `info --json` and `get`. Suggest updating
 the suite header to reference it explicitly:
 
 ```
-> Part of the contract-operations CLI suite.
+> Part of the contract-ops CLI suite.
 > [**draft-cli**](...) (fill placeholders) →
 > **nda-review-cli** (review, redline, negotiate) →
 > [**docx2pdf-cli**](...) (DOCX → PDF) →
@@ -131,7 +131,7 @@ drift detector. Suggested update — adopt the same line shape the other
 CLIs are converging on:
 
 ```
-> Part of the contract-operations CLI suite. [draft-cli] → [nda-review-cli] →
+> Part of the contract-ops CLI suite. [draft-cli] → [nda-review-cli] →
 > **docx2pdf-cli** → [sign-cli]. Storage: [template-vault-cli]. Drift: [compare-cli].
 ```
 
@@ -148,7 +148,7 @@ in the README header should also mention the storage and drift-detection
 auxiliaries:
 
 ```
-> Part of the contract-operations CLI suite. [draft-cli] → [nda-review-cli] →
+> Part of the contract-ops CLI suite. [draft-cli] → [nda-review-cli] →
 > [docx2pdf-cli] → **sign-cli**. Storage: [template-vault-cli]. Drift: [compare-cli].
 ```
 

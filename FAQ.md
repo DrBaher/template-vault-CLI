@@ -184,7 +184,7 @@ keeps the deterministic 95% local.
 ## What's the relationship to the other CLIs in the suite?
 
 `template-vault-cli` is the **storage layer** of the
-[contract-operations CLI suite](https://cli.drbaher.com). It feeds the
+[contract-ops CLI suite](https://cli.drbaher.com). It feeds the
 **pre-execution pipeline** — four tools, run in order:
 
 1. **[draft-cli](https://github.com/DrBaher/draft-cli)** fills placeholders

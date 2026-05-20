@@ -4,7 +4,7 @@
 > Public sources (Common Paper, YC SAFE, Bonterms) and your own house templates,
 > in one searchable, composable, version-tracked vault. Stdlib-only Python. MIT.
 >
-> Part of the contract-operations CLI suite. **template-vault-cli** is the
+> Part of the contract-ops CLI suite. **template-vault-cli** is the
 > storage layer feeding the pre-execution pipeline:
 > [**draft-cli**](https://github.com/DrBaher/draft-cli) (fill placeholders) →
 > [**nda-review-cli**](https://github.com/DrBaher/nda-review-cli) (review, redline, negotiate) →
@@ -216,7 +216,7 @@ full schema and the clause-detection regex.
 
 ## Suite
 
-`template-vault-cli` belongs to the **contract-operations CLI suite** at
+`template-vault-cli` belongs to the **contract-ops CLI suite** at
 [cli.drbaher.com](https://cli.drbaher.com).
 
 **This repo (`template-vault-cli`)** is the storage layer: stores templates

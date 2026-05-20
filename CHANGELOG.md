@@ -286,7 +286,7 @@ required.
   the compare-cli spec, with recommended direction for each
   (align here / align there / accept divergence).
 - README, FAQ, and ARCHITECTURE.md now cross-reference the full
-  contract-operations CLI suite at [cli.drbaher.com](https://cli.drbaher.com):
+  contract-ops CLI suite at [cli.drbaher.com](https://cli.drbaher.com):
   template-vault → draft → review → compare → convert → sign. Adds
   draft-cli and compare-cli to the suite listing (both shipped after
   v0.4.0).

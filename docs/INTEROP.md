@@ -1,7 +1,7 @@
 # Cross-CLI interop contract
 
 This document is the **citation point** for what `template-vault-cli` provides
-to the rest of the contract-operations CLI suite, and the conventions all
+to the rest of the contract-ops CLI suite, and the conventions all
 sibling CLIs are expected to share. It exists so sibling repos
 ([draft-cli](https://github.com/DrBaher/draft-cli),
 [nda-review-cli](https://github.com/DrBaher/nda-review-cli),
@@ -174,7 +174,7 @@ linear chain.
 
 Example (from this repo's README header):
 
-> Part of the contract-operations CLI suite. **template-vault-cli** is the
+> Part of the contract-ops CLI suite. **template-vault-cli** is the
 > storage layer feeding the pre-execution pipeline:
 > [**draft-cli**](...) (fill placeholders) →
 > [**nda-review-cli**](...) (review, redline, negotiate) →

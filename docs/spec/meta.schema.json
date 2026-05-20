@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/DrBaher/template-vault-cli/blob/main/docs/spec/meta.schema.json",
   "title": "template-vault meta.json schema (v1)",
-  "description": "Per-template metadata stored at <vault>/<category>/<name>/meta.json. The vault layer (storage) of the contract-operations CLI suite.",
+  "description": "Per-template metadata stored at <vault>/<category>/<name>/meta.json. The vault layer (storage) of the contract-ops CLI suite.",
   "type": "object",
   "required": ["name", "category", "latest_version", "versions"],
   "properties": {
