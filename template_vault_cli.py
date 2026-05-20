@@ -3199,9 +3199,9 @@ def _add_llm_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm-base-url", help="LLM base URL override (for OpenAI-compatible endpoints)")
 
 
-def _catalog_flags(subparser):
+def _catalog_flags(subparser: argparse.ArgumentParser) -> List[Dict[str, Any]]:
     """Return a subparser's --flag entries (skips positionals + nested subparsers)."""
-    out = []
+    out: List[Dict[str, Any]] = []
     for action in subparser._actions:
         if isinstance(action, argparse._SubParsersAction):
             continue
@@ -3209,7 +3209,7 @@ def _catalog_flags(subparser):
             continue
         if action.help == argparse.SUPPRESS:
             continue
-        default = action.default
+        default: Any = action.default
         if default is argparse.SUPPRESS:
             default = None
         out.append({
@@ -3223,29 +3223,34 @@ def _catalog_flags(subparser):
     return out
 
 
-def _catalog_subcommand(name, subparser, help_text=""):
+def _catalog_subcommand(name: str, subparser: argparse.ArgumentParser, help_text: str = "") -> Dict[str, Any]:
     """Walk a subparser, recursing into any nested subparsers."""
-    entry = {
+    entry: Dict[str, Any] = {
         "name": name,
         "help": (subparser.description or help_text or "").strip(),
         "flags": _catalog_flags(subparser),
     }
-    nested = next((a for a in subparser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    # Typed Any: argparse._SubParsersAction is generic/internal; treat as Any.
+    nested: Any = next(
+        (a for a in subparser._actions if isinstance(a, argparse._SubParsersAction)), None
+    )
     if nested is not None:
-        helpmap = {ca.dest: (ca.help or "") for ca in getattr(nested, "_choices_actions", [])}
+        helpmap: Dict[str, str] = {ca.dest: (ca.help or "") for ca in getattr(nested, "_choices_actions", [])}
         entry["subcommands"] = [
             _catalog_subcommand(n, sp, helpmap.get(n, "")) for n, sp in nested.choices.items()
         ]
     return entry
 
 
-def _catalog_for(parser):
+def _catalog_for(parser: argparse.ArgumentParser) -> Dict[str, Any]:
     """Stable machine-readable command + flag inventory. Mirrors the
     `--catalog json` contract shared with nda-review-cli / docx2pdf-cli / sign-cli."""
-    sub_action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
-    commands = []
+    sub_action: Any = next(
+        (a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None
+    )
+    commands: List[Dict[str, Any]] = []
     if sub_action is not None:
-        helpmap = {ca.dest: (ca.help or "") for ca in getattr(sub_action, "_choices_actions", [])}
+        helpmap: Dict[str, str] = {ca.dest: (ca.help or "") for ca in getattr(sub_action, "_choices_actions", [])}
         commands = [
             _catalog_subcommand(n, sp, helpmap.get(n, "")) for n, sp in sub_action.choices.items()
         ]
