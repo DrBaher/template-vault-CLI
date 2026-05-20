@@ -185,9 +185,11 @@ commands using only template names and clause titles from the listing. The
 CLI does not currently auto-execute them — you copy-paste into your shell.
 This keeps the loop deterministic and reviewable.
 
-Configure the LLM via `~/.config/template-vault-cli/llm.json` (see
-`config/llm.json.example`). If you've already configured `nda-review-cli`,
-its config is reused so you don't have to set up two providers.
+Configure the LLM once via the suite-wide `~/.config/contract-ops/llm.json` (see
+`config/llm.json.example`). Every contract-ops CLI that supports an LLM reads this
+same file, so configuring it once works across the suite (the legacy
+`~/.config/template-vault-cli/llm.json` and `~/.config/nda-review-cli/llm.json`
+locations are still honored as fallbacks).
 
 ---
 

@@ -812,7 +812,7 @@ def _llm_request(cfg: Dict[str, Any], system: str, user: str,
     if not api_key:
         raise VaultError(
             "No LLM API key found. Set NDA_VAULT_LLM_API_KEY or write "
-            "~/.config/template-vault-cli/llm.json (see config/llm.json.example)."
+            "~/.config/contract-ops/llm.json (the suite-wide location; see config/llm.json.example)."
         )
     if provider == "anthropic":
         url = "https://api.anthropic.com/v1/messages"
