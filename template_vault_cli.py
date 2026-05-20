@@ -3199,6 +3199,65 @@ def _add_llm_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--llm-base-url", help="LLM base URL override (for OpenAI-compatible endpoints)")
 
 
+def _catalog_flags(subparser):
+    """Return a subparser's --flag entries (skips positionals + nested subparsers)."""
+    out = []
+    for action in subparser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            continue
+        if not action.option_strings:
+            continue
+        if action.help == argparse.SUPPRESS:
+            continue
+        default = action.default
+        if default is argparse.SUPPRESS:
+            default = None
+        out.append({
+            "name": action.option_strings[-1],
+            "aliases": action.option_strings[:-1] if len(action.option_strings) > 1 else [],
+            "help": action.help or "",
+            "required": bool(getattr(action, "required", False)),
+            "default": default,
+            "choices": list(action.choices) if action.choices else None,
+        })
+    return out
+
+
+def _catalog_subcommand(name, subparser, help_text=""):
+    """Walk a subparser, recursing into any nested subparsers."""
+    entry = {
+        "name": name,
+        "help": (subparser.description or help_text or "").strip(),
+        "flags": _catalog_flags(subparser),
+    }
+    nested = next((a for a in subparser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    if nested is not None:
+        helpmap = {ca.dest: (ca.help or "") for ca in getattr(nested, "_choices_actions", [])}
+        entry["subcommands"] = [
+            _catalog_subcommand(n, sp, helpmap.get(n, "")) for n, sp in nested.choices.items()
+        ]
+    return entry
+
+
+def _catalog_for(parser):
+    """Stable machine-readable command + flag inventory. Mirrors the
+    `--catalog json` contract shared with nda-review-cli / docx2pdf-cli / sign-cli."""
+    sub_action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    commands = []
+    if sub_action is not None:
+        helpmap = {ca.dest: (ca.help or "") for ca in getattr(sub_action, "_choices_actions", [])}
+        commands = [
+            _catalog_subcommand(n, sp, helpmap.get(n, "")) for n, sp in sub_action.choices.items()
+        ]
+    return {
+        "name": "template-vault-cli",
+        "bin": "template-vault",
+        "version": __version__,
+        "description": parser.description or "",
+        "commands": commands,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="template-vault",
@@ -3206,6 +3265,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-V", "--version", action="version",
                    version=f"template-vault {__version__}")
+    p.add_argument("--catalog", choices=["json"], default=None,
+                   help="Print a machine-readable command + flag inventory and exit "
+                        "(agents call this at startup instead of parsing --help).")
     sub = p.add_subparsers(dest="cmd")
 
     p_demo = sub.add_parser("demo",
@@ -3471,6 +3533,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "catalog", None) == "json":
+        print(json.dumps(_catalog_for(parser), indent=2, default=str))
+        return 0
     if not getattr(args, "func", None):
         sys.stdout.write(_FIRST_RUN_HINT)
         return 0
