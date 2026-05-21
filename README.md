@@ -67,6 +67,7 @@ below for the composition workflow.
 | **An LLM agent** driving the CLI | [AGENTS.md](AGENTS.md) → `template-vault --catalog json` → JSON Schemas in [docs/spec/](docs/spec/) |
 | **Composing templates** (fork + swap clauses) | [End-to-end: clause-aware composition](#end-to-end-clause-aware-composition) |
 | **Integrating with the suite** | [docs/INTEROP.md](docs/INTEROP.md) — the storage/output contract + shared LLM config |
+| **Adding a new CLI to the suite** | The [build-a-CLI playbook](https://cli.drbaher.com/build-a-cli) — the conventions every suite CLI follows |
 
 ## What it does
 
