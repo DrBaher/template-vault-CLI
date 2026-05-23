@@ -3,6 +3,8 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      # Weekly so the SHA-pinned actions don't drift far behind upstream
+      # security fixes (publish.yml holds PyPI publishing rights).
+      interval: "weekly"
     commit-message:
       prefix: "ci"
