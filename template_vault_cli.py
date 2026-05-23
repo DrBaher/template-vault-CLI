@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, cast
@@ -130,6 +131,74 @@ class VaultError(Exception):
 
 class NotFoundError(VaultError):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+# A category or template name lands directly on the filesystem under the vault
+# root (`root/category/name`). Restrict each to a single ordinary path segment
+# so a crafted reference, `--as` target, or sources-registry entry can't climb
+# out of the vault (e.g. `../../etc/passwd`). This is a superset of the
+# characters real categories/names use ([a-z0-9-]).
+_SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Schemes we hand to urllib. Anything else (file://, gopher://, data:, ftp://)
+# is refused so a registry URL or LLM base_url can't read local files or reach
+# unexpected services.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _validate_path_component(value: str, kind: str) -> str:
+    """Reject path components that could escape the vault root.
+
+    Raises VaultError on anything that isn't a single, ordinary path segment.
+    Returns the value unchanged when it is safe.
+    """
+    if not value or value in (".", ".."):
+        raise VaultError(f"Invalid {kind} {value!r}: must be a non-empty path segment")
+    if "/" in value or "\\" in value or "\x00" in value:
+        raise VaultError(f"Invalid {kind} {value!r}: path separators are not allowed")
+    if not _SAFE_COMPONENT_RE.match(value):
+        raise VaultError(
+            f"Invalid {kind} {value!r}: only letters, digits, '.', '-' and '_' are allowed"
+        )
+    return value
+
+
+def _require_safe_url(url: str, *, context: str, allow_remote_http: bool) -> str:
+    """Validate a URL before handing it to urllib; return it unchanged if safe.
+
+    - Only http/https are permitted — file://, gopher://, data:, ftp:// etc.
+      are refused, so an external URL can't coerce urlopen into reading local
+      files or hitting unexpected schemes.
+    - Plain http to a non-loopback host is refused unless `allow_remote_http`
+      is set. The LLM path keeps it off (an API key must never travel in
+      cleartext to a remote host, but http://localhost for Ollama/LM Studio is
+      fine); the import path turns it on (no credentials, and integrity is
+      covered by sha256 pinning).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError as e:
+        raise VaultError(f"Invalid {context} URL {url!r}: {e}") from e
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise VaultError(
+            f"Refusing {context} URL with scheme {scheme or '(none)'!r}: "
+            f"only http/https are allowed ({url!r})."
+        )
+    if not parsed.hostname:
+        raise VaultError(f"Invalid {context} URL {url!r}: missing host.")
+    if scheme == "http" and not allow_remote_http:
+        if (parsed.hostname or "").lower() not in _LOOPBACK_HOSTS:
+            raise VaultError(
+                f"Refusing plain-http {context} URL {url!r}: use https, or "
+                f"http://localhost for a local LLM. Sending credentials over "
+                f"an unencrypted connection is not allowed."
+            )
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +318,8 @@ def _dump_json(obj: Any) -> str:
 
 
 def template_dir(root: Path, category: str, name: str) -> Path:
+    _validate_path_component(category, "category")
+    _validate_path_component(name, "name")
     return root / category / name
 
 
@@ -829,6 +900,9 @@ def _llm_request(cfg: Dict[str, Any], system: str, user: str,
         }).encode("utf-8")
     else:  # openai-compatible
         base = (cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+        # An API key rides in this request's headers — refuse non-http(s)
+        # schemes and plain http to anything but loopback (local LLMs).
+        _require_safe_url(base, context="LLM base_url", allow_remote_http=False)
         url = f"{base}/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -844,7 +918,9 @@ def _llm_request(cfg: Dict[str, Any], system: str, user: str,
         }).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # Scheme restricted to http/https by _require_safe_url above, so the
+        # file:// arbitrary-read class B310 warns about is not reachable.
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise VaultError(f"LLM HTTP {e.code}: {e.reason}") from e
@@ -896,9 +972,15 @@ def load_sources_registry(override_path: Optional[Path] = None) -> Dict[str, Any
 
 
 def _fetch_url(url: str, timeout: int = 30) -> bytes:
+    # Block file:// and other non-http(s) schemes so a sources-registry entry
+    # can't make `import` read an arbitrary local file. http to remote mirrors
+    # is allowed (no credentials here; integrity is covered by sha256 pinning).
+    _require_safe_url(url, context="source", allow_remote_http=True)
     req = urllib.request.Request(
         url, headers={"User-Agent": f"template-vault-cli/{__version__}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    # Scheme restricted to http/https by _require_safe_url above, so the
+    # file:// arbitrary-read class B310 warns about is not reachable.
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
         return cast(bytes, resp.read())
 
 
@@ -2306,7 +2388,10 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
 
     extracted = 0
     for c in clusters:
-        slug = _slug_from_title(c["title"])
+        slug = _slug_from_title(c["title"])  # already constrained to [a-z0-9-]
+        # ref_category comes from vaulted templates (already validated), but
+        # validate again before it lands on the filesystem (defense in depth).
+        _validate_path_component(c["ref_category"], "category")
         dest = root / "clauses" / c["ref_category"] / f"{slug}.md"
         if dest.exists():
             print(f"  skip: {dest.relative_to(root)} already exists")
