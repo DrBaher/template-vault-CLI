@@ -4,8 +4,7 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
-## Unreleased
-
+## 0.5.1 — 2026-05-23
 ### Security
 - **Supply-chain hardening of CI/CD.** Every GitHub Action is pinned to a full
   commit SHA (was floating `@vN` tags); `publish.yml` is least-privilege
