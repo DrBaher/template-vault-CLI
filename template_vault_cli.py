@@ -167,6 +167,44 @@ def _validate_path_component(value: str, kind: str) -> str:
     return value
 
 
+# Owner-only permissions for vault contents (POSIX best-effort; no-ops on
+# Windows, where ACLs apply). Full-disk encryption remains the real control.
+_DIR_MODE = 0o700
+_FILE_MODE = 0o600
+
+
+def _secure_chmod(path: Path, mode: int) -> None:
+    """Best-effort chmod; skip on non-POSIX or if the filesystem rejects it."""
+    if os.name != "posix":
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _secure_mkdir(path: Path) -> None:
+    """`mkdir -p`, then tighten a freshly created leaf to 0700 (best-effort).
+
+    A pre-existing directory is left as-is — we never silently re-permission a
+    directory the user already had (e.g. `init` in an existing cwd).
+    """
+    existed = path.exists()
+    path.mkdir(parents=True, exist_ok=True)
+    if not existed:
+        _secure_chmod(path, _DIR_MODE)
+
+
+def _secure_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    path.write_text(text, encoding=encoding)
+    _secure_chmod(path, _FILE_MODE)
+
+
+def _secure_write_bytes(path: Path, data: bytes) -> None:
+    path.write_bytes(data)
+    _secure_chmod(path, _FILE_MODE)
+
+
 def _require_safe_url(url: str, *, context: str, allow_remote_http: bool) -> str:
     """Validate a URL before handing it to urllib; return it unchanged if safe.
 
@@ -284,7 +322,7 @@ def read_vault_config(root: Path) -> Dict[str, Any]:
 
 
 def write_vault_config(root: Path, cfg: Dict[str, Any]) -> None:
-    (root / VAULT_CONFIG_FILENAME).write_text(_dump_json(cfg), encoding="utf-8")
+    _secure_write_text(root / VAULT_CONFIG_FILENAME, _dump_json(cfg))
 
 
 def validate_vault_config(cfg: Dict[str, Any]) -> List[str]:
@@ -405,7 +443,7 @@ def _overlay_vault_defaults(meta: Dict[str, Any], cfg: Dict[str, Any]
 
 
 def save_meta(t_dir: Path, meta: Dict[str, Any]) -> None:
-    (t_dir / META_FILENAME).write_text(_dump_json(meta), encoding="utf-8")
+    _secure_write_text(t_dir / META_FILENAME, _dump_json(meta))
 
 
 def validate_meta(meta: Dict[str, Any]) -> List[str]:
@@ -1101,7 +1139,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_init(args: argparse.Namespace) -> int:
     target = Path(args.path or ".").resolve()
-    target.mkdir(parents=True, exist_ok=True)
+    _secure_mkdir(target)
     cfg_path = target / VAULT_CONFIG_FILENAME
     if cfg_path.exists():
         _eprint(f"Vault already initialized at {target}")
@@ -1265,7 +1303,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     if is_docx:
         converted_text = _docx_to_markdown(src)
 
-    t_dir.mkdir(parents=True, exist_ok=True)
+    _secure_mkdir(t_dir)
 
     # Load or initialize meta
     if (t_dir / META_FILENAME).exists():
@@ -1313,7 +1351,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
         old_bytes = old_path.read_bytes()
         old_sha = sha256_bytes(old_bytes)
         new_bytes = converted_text.encode("utf-8") if converted_text is not None else src.read_bytes()
-        old_path.write_bytes(new_bytes)
+        _secure_write_bytes(old_path, new_bytes)
         amend_note = f"amended (prior sha256: {old_sha})"
         if args.changelog:
             amend_note = f"{args.changelog} — {amend_note}"
@@ -1334,9 +1372,9 @@ def cmd_upload(args: argparse.Namespace) -> int:
     dest_suffix = ".md" if is_docx else (src.suffix.lower() or ".md")
     dest = t_dir / f"{vid}{dest_suffix}"
     if converted_text is not None:
-        dest.write_text(converted_text)
+        _secure_write_text(dest, converted_text)
     else:
-        dest.write_bytes(src.read_bytes())
+        _secure_write_bytes(dest, src.read_bytes())
 
     # Append version entry
     base_changelog = args.changelog or (
@@ -1772,9 +1810,9 @@ def cmd_compose(args: argparse.Namespace) -> int:
     new_dir = template_dir(root, new_cat, new_name)
     if new_dir.exists():
         raise VaultError(f"Target already exists: {new_cat}/{new_name}")
-    new_dir.mkdir(parents=True)
+    _secure_mkdir(new_dir)
     new_file = new_dir / f"v1{base_file.suffix}"
-    new_file.write_bytes(base_file.read_bytes())
+    _secure_write_bytes(new_file, base_file.read_bytes())
     new_meta = {
         "name": new_name,
         "category": new_cat,
@@ -1867,7 +1905,7 @@ def cmd_swap(args: argparse.Namespace) -> int:
     src_body_after_header = src_body.split("\n", 1)[1] if "\n" in src_body else ""
     replacement = target_clause["anchor"] + "\n" + src_body_after_header
     new_text = replace_clause(target_text, target_clause, replacement)
-    target_file.write_text(new_text)
+    _secure_write_text(target_file, new_text)
 
     overrides = target_meta.get("clause_overrides") or []
     overrides.append({
@@ -2165,7 +2203,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     # Write a new version
     next_vid = auto_increment_version(meta)
     new_file = t_dir / f"{next_vid}{derived_file.suffix}"
-    new_file.write_text(new_text)
+    _secure_write_text(new_file, new_text)
     meta["versions"].append({
         "id": next_vid,
         "added": _today_iso(),
@@ -2406,14 +2444,14 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
                 ans = "n"
             if ans != "y":
                 continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        _secure_mkdir(dest.parent)
         # Body already starts with the H2 header. Add a small provenance note.
         members_str = ", ".join(f"{ref}@{ver}" for ref, ver, _t in c["members"])
         provenance = (
             f"<!-- extracted by template-vault clause-library on {_today_iso()} "
             f"from: {members_str} -->\n\n"
         )
-        dest.write_text(provenance + c["ref_body"].rstrip() + "\n")
+        _secure_write_text(dest, provenance + c["ref_body"].rstrip() + "\n")
         extracted += 1
         print(f"  wrote: {dest.relative_to(root)}")
 
@@ -2675,7 +2713,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     name = src["name"]
     t_dir = template_dir(root, cat, name)
     new = not t_dir.exists()
-    t_dir.mkdir(parents=True, exist_ok=True)
+    _secure_mkdir(t_dir)
     meta = load_meta(t_dir) if (t_dir / META_FILENAME).exists() else {
         "name": name,
         "category": cat,
@@ -2685,7 +2723,7 @@ def cmd_import(args: argparse.Namespace) -> int:
     meta = fill_meta_defaults(meta)
     vid = auto_increment_version(meta)
     dest = t_dir / f"{vid}{ext}"
-    dest.write_bytes(body)
+    _secure_write_bytes(dest, body)
     meta["versions"].append({
         "id": vid,
         "added": _today_iso(),

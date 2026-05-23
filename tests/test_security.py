@@ -7,6 +7,8 @@ These guard the two filesystem/network trust boundaries:
 """
 
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +121,32 @@ class ImportRejectsFileUrlTests(CliCase):
             self.assertNotEqual(code, 0)
             self.assertNotIn("TOP SECRET", err)
             self.assertFalse((v / "nda" / "evil").exists())
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX permission semantics only")
+class PermissionTests(CliCase):
+    def _mode(self, p: Path) -> int:
+        return stat.S_IMODE(p.stat().st_mode)
+
+    def test_init_creates_owner_only_vault_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            vault = Path(d) / "vault"  # does not exist yet -> we create it
+            self.assertOk(run_cli("init", "--path", str(vault)))
+            self.assertEqual(self._mode(vault), 0o700)
+            self.assertEqual(self._mode(vault / tvc.VAULT_CONFIG_FILENAME), 0o600)
+
+    def test_upload_writes_owner_only_files(self):
+        with temp_vault() as v:
+            src = v / "src.md"
+            src.write_text(SAMPLE_NDA_MUTUAL)
+            self.assertOk(run_cli(
+                "upload", str(src), "--category", "nda", "--name", "house",
+                "--summary", "s", "--non-interactive",
+            ))
+            t_dir = v / "nda" / "house"
+            self.assertEqual(self._mode(t_dir), 0o700)
+            self.assertEqual(self._mode(t_dir / "meta.json"), 0o600)
+            self.assertEqual(self._mode(t_dir / "v1.md"), 0o600)
 
 
 if __name__ == "__main__":
