@@ -17,6 +17,11 @@ from tests._helpers import (
     CliCase, run_cli, temp_vault, tvc, add_template, SAMPLE_NDA_MUTUAL,
 )
 
+# A harmless sentinel written to a local file the tests then try (and fail) to
+# fetch via file://. Deliberately not named like a credential — it's a decoy
+# proving the file is never read, not real sensitive data.
+DECOY_CONTENTS = "decoy-file-marker-not-a-credential"
+
 
 class PathContainmentTests(unittest.TestCase):
     def test_validate_rejects_traversal_components(self):
@@ -97,29 +102,29 @@ class UrlSchemeTests(unittest.TestCase):
     def test_fetch_url_refuses_file_scheme(self):
         # Must reject before urlopen — i.e. it never reads the local file.
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-            f.write("TOP SECRET")
-            secret = f.name
+            f.write(DECOY_CONTENTS)
+            bait_path = f.name
         with self.assertRaises(tvc.VaultError):
-            tvc._fetch_url(f"file://{secret}")
+            tvc._fetch_url(f"file://{bait_path}")
 
 
 class ImportRejectsFileUrlTests(CliCase):
     def test_import_with_file_url_registry_is_refused(self):
         with temp_vault() as v:
             with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-                f.write("TOP SECRET")
-                secret = f.name
+                f.write(DECOY_CONTENTS)
+                bait_path = f.name
             reg = v / "evil-sources.json"
             reg.write_text(json.dumps({
                 "schema_version": tvc.SCHEMA_VERSION,
                 "sources": [{
                     "id": "evil", "category": "nda", "name": "evil",
-                    "url": f"file://{secret}", "license": "x", "sha256": None,
+                    "url": f"file://{bait_path}", "license": "x", "sha256": None,
                 }],
             }))
             code, _out, err = run_cli("import", "evil", "--sources", str(reg))
             self.assertNotEqual(code, 0)
-            self.assertNotIn("TOP SECRET", err)
+            self.assertNotIn(DECOY_CONTENTS, err)
             self.assertFalse((v / "nda" / "evil").exists())
 
 
