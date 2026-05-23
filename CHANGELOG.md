@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## Unreleased
+
+### Security
+- **Supply-chain hardening of CI/CD.** Every GitHub Action is pinned to a full
+  commit SHA (was floating `@vN` tags); `publish.yml` is least-privilege
+  (`id-token: write` only on the publish job) and now emits PEP 740 build
+  attestations. Added a CodeQL (security-extended) workflow, a Bandit
+  (medium+) CI gate, and `.github/CODEOWNERS`; Dependabot watches
+  `github-actions` weekly. See [SECURITY.md](SECURITY.md).
+- **Vault path containment.** `category`/`name` are validated as single path
+  segments, so a crafted reference, `compose --as`, `upload --category`, or a
+  custom sources registry can no longer escape the vault with a
+  `../../etc/passwd`-style value.
+- **URL-scheme validation.** `import` and the LLM `base_url` accept only
+  `http`/`https` (no `file://` local reads); the LLM `base_url` additionally
+  refuses plain `http` to a non-loopback host, so an API key is never sent in
+  cleartext (`http://localhost` stays allowed for local models like Ollama).
+- **Owner-only permissions (POSIX, best-effort).** New vault directories are
+  created `0700` and `.vault.json` / `meta.json` / template files `0600`
+  (no-op on Windows, where ACLs apply).
+
+### Changed
+- Bumped pinned actions to current majors: `checkout` v6.0.2, `setup-python`
+  v6.2.0, `codeql-action` v4.36.0, `upload-artifact` v7.0.1, `download-artifact`
+  v7.0.0.
+
 ## 0.5.0 — 2026-05-23
 
 ### Added
