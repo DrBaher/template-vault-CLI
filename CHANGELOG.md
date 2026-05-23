@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.5.0 — 2026-05-23
+
+### Added
+- **`template-vault --catalog json`** — the suite-wide discovery contract
+  (`{name, bin, version, description, commands, exitCodes}`, walking the live
+  argparse tree incl. nested subcommands), so an agent learns every command and
+  flag at startup. Exit codes are included in the catalog. This shipped to
+  `main` after 0.4.8 but was never published; 0.5.0 releases it to PyPI.
+
 ## 0.4.8 — 2026-05-19
 ### Added — cross-CLI interop deliverables
 - **Six JSON Schemas in `docs/spec/`** documenting the data contracts
