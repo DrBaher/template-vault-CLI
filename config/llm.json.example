@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to llm.json (gitignored) and edit. Or set NDA_VAULT_LLM_PROVIDER / NDA_VAULT_LLM_API_KEY / NDA_VAULT_LLM_MODEL / NDA_VAULT_LLM_BASE_URL env vars. CLI flags --llm / --llm-model / --llm-base-url override either.",
+  "_comment": "Copy to llm.json (gitignored) and edit, then `chmod 600 llm.json` (it holds your API key). Or set NDA_VAULT_LLM_PROVIDER / NDA_VAULT_LLM_API_KEY / NDA_VAULT_LLM_MODEL / NDA_VAULT_LLM_BASE_URL env vars. CLI flags --llm / --llm-model / --llm-base-url override either. base_url must be https (or http://localhost for a local model).",
   "provider": "anthropic",
   "model": "claude-sonnet-4-6",
   "api_key": "sk-ant-...",
