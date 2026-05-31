@@ -40,7 +40,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, cast
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
@@ -195,14 +195,49 @@ def _secure_mkdir(path: Path) -> None:
         _secure_chmod(path, _DIR_MODE)
 
 
-def _secure_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
-    path.write_text(text, encoding=encoding)
-    _secure_chmod(path, _FILE_MODE)
-
-
 def _secure_write_bytes(path: Path, data: bytes) -> None:
-    path.write_bytes(data)
-    _secure_chmod(path, _FILE_MODE)
+    """Atomically write `data` to `path` with owner-only perms.
+
+    Writes a temp file in the same directory, fsyncs it, applies 0600
+    (best-effort, POSIX), then os.replace()s it into place. A crash mid-write
+    can never leave a truncated destination (the prior file stays intact until
+    the atomic rename), and a partial temp file is cleaned up on error.
+    """
+    path = Path(path)
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _secure_chmod(Path(tmp_name), _FILE_MODE)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _secure_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Atomic text write with owner-only perms (see _secure_write_bytes)."""
+    _secure_write_bytes(Path(path), text.encode(encoding))
+
+
+def _read_text_utf8(path: Path) -> str:
+    """Read `path` as UTF-8 text, converting a non-UTF-8 body (e.g. an
+    imported PDF/binary) into a clean VaultError instead of a raw
+    UnicodeDecodeError traceback."""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise VaultError(
+            f"{path} is not valid UTF-8 text (likely a binary/PDF body); "
+            f"cannot read as text."
+        ) from e
 
 
 def _require_safe_url(url: str, *, context: str, allow_remote_http: bool) -> str:
@@ -1156,11 +1191,15 @@ def cmd_init(args: argparse.Namespace) -> int:
             _git_init(target, bare=False)
         except subprocess.CalledProcessError as e:
             _eprint(f"warning: git init failed: {e.stderr or e}")
+        except FileNotFoundError:
+            _eprint("warning: git not found; initialized vault without a git repo")
     elif args.bare:
         try:
             _git_init(target, bare=True)
         except subprocess.CalledProcessError as e:
             _eprint(f"warning: git init --bare failed: {e.stderr or e}")
+        except FileNotFoundError:
+            _eprint("warning: git not found; initialized vault without a git repo")
     print(f"Initialized vault at {target}")
     print("Next: `template-vault sources` to see available imports, or "
           "`template-vault upload <file> --category nda --name house-mutual`.")
@@ -1266,7 +1305,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         )
     meta = load_meta_resolved(t_dir)
     f = resolve_version_file(t_dir, meta, version)
-    text = f.read_text(encoding="utf-8")
+    text = _read_text_utf8(f)
     fmt = (args.as_ or "").lower()
     if fmt != "docx":
         raise VaultError(f"Unsupported export format: {args.as_!r}. Only 'docx' is supported.")
@@ -1543,6 +1582,8 @@ def cmd_find(args: argparse.Namespace) -> int:
         if score >= 0.3:
             hits.append((score, cat, name, meta.get("latest_version") or "?", meta))
     hits.sort(reverse=True, key=lambda t: (t[0], t[1], t[2]))
+    if args.top_k < 0:
+        raise VaultError(f"--top-k must be >= 0 (got {args.top_k})")
     hits = hits[: args.top_k]
     if getattr(args, "json", False):
         payload = {
@@ -1591,7 +1632,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     if args.path_only:
         print(str(f))
         return 0
-    sys.stdout.write(f.read_text())
+    sys.stdout.write(_read_text_utf8(f))
     return 0
 
 
@@ -1609,7 +1650,7 @@ def cmd_info(args: argparse.Namespace) -> int:
         # Structured payload for downstream tools (e.g. nda-review-cli).
         try:
             f = resolve_version_file(t_dir, meta, None)
-            text = f.read_text()
+            text = _read_text_utf8(f)
             cs = detect_clauses(
                 text,
                 explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
@@ -1736,8 +1777,8 @@ def cmd_diff(args: argparse.Namespace) -> int:
     cat, name, _v = parse_ref(args.ref)
     t_dir = template_dir(root, cat, name)
     meta = load_meta(t_dir)
-    a = resolve_version_file(t_dir, meta, args.version_a).read_text().splitlines(keepends=True)
-    b = resolve_version_file(t_dir, meta, args.version_b).read_text().splitlines(keepends=True)
+    a = _read_text_utf8(resolve_version_file(t_dir, meta, args.version_a)).splitlines(keepends=True)
+    b = _read_text_utf8(resolve_version_file(t_dir, meta, args.version_b)).splitlines(keepends=True)
     out = difflib.unified_diff(
         a, b,
         fromfile=f"{cat}/{name}@{args.version_a}",
@@ -1764,7 +1805,7 @@ def _load_template_text_and_clauses(root: Path, cat: str, name: str,
         )
     meta = load_meta_resolved(t_dir)
     f = resolve_version_file(t_dir, meta, version)
-    text = f.read_text()
+    text = _read_text_utf8(f)
     explicit = meta.get("clauses")
     aliases = meta.get("clause_aliases") if isinstance(meta.get("clause_aliases"), dict) else None
     clauses = detect_clauses(
@@ -1873,8 +1914,8 @@ def cmd_swap(args: argparse.Namespace) -> int:
     src_file = resolve_version_file(src_dir, src_meta, src_version)
     src_vid = src_version or src_meta["latest_version"]
 
-    target_text = target_file.read_text()
-    src_text = src_file.read_text()
+    target_text = _read_text_utf8(target_file)
+    src_text = _read_text_utf8(src_file)
     target_clauses = detect_clauses(
         target_text,
         explicit_map=target_meta.get("clauses") if isinstance(target_meta.get("clauses"), list) else None,
@@ -2090,15 +2131,15 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         return 0
     fork_file = resolve_version_file(p_dir, p_meta, parent_v_at_fork)
     latest_file = resolve_version_file(p_dir, p_meta, parent_latest)
-    fork_text = fork_file.read_text()
-    latest_text = latest_file.read_text()
+    fork_text = _read_text_utf8(fork_file)
+    latest_text = _read_text_utf8(latest_file)
     p_aliases = effective_clause_aliases(p_dir, p_meta)
     p_explicit = p_meta.get("clauses") if isinstance(p_meta.get("clauses"), list) else None
     fork_clauses = detect_clauses(fork_text, explicit_map=p_explicit, aliases_map=p_aliases)
     latest_clauses = detect_clauses(latest_text, explicit_map=p_explicit, aliases_map=p_aliases)
 
     derived_file = resolve_version_file(t_dir, meta, meta["latest_version"])
-    derived_text = derived_file.read_text()
+    derived_text = _read_text_utf8(derived_file)
     d_aliases = effective_clause_aliases(t_dir, meta)
     d_explicit = meta.get("clauses") if isinstance(meta.get("clauses"), list) else None
     derived_clauses = detect_clauses(
@@ -2341,7 +2382,7 @@ def cmd_clause_library(args: argparse.Namespace) -> int:
     for cat, name, _path, meta in iter_templates(root):
         try:
             f = resolve_version_file(template_dir(root, cat, name), meta, None)
-            text = f.read_text()
+            text = _read_text_utf8(f)
         except (VaultError, OSError):
             continue
         explicit = meta.get("clauses") if isinstance(meta.get("clauses"), list) else None
@@ -2500,7 +2541,7 @@ def _ask_build_listing(root: Path, top_k: int, with_content: bool,
     for score, cat, name, meta, path in chosen:
         try:
             f = resolve_version_file(path, meta, None)
-            text = f.read_text()
+            text = _read_text_utf8(f)
             clauses = detect_clauses(
                 text,
                 explicit_map=meta.get("clauses") if isinstance(meta.get("clauses"), list) else None,
@@ -2674,9 +2715,19 @@ def cmd_import(args: argparse.Namespace) -> int:
     reg = load_sources_registry(_resolve_sources_path(args))
     matches = [s for s in reg.get("sources", []) if s.get("id") == args.source_id]
     if not matches:
-        ids = ", ".join(s["id"] for s in reg.get("sources", []))
+        ids = ", ".join(
+            str(s.get("id", "?")) for s in reg.get("sources", []) if isinstance(s, dict)
+        )
         raise VaultError(f"Unknown source: {args.source_id!r}. Available: {ids}")
     src = matches[0]
+    # A hand-rolled --sources registry entry may omit required keys; surface a
+    # clean VaultError naming the offending source rather than a raw KeyError.
+    for required in ("url", "category", "name"):
+        if not src.get(required):
+            raise VaultError(
+                f"Source {args.source_id!r} is missing required key {required!r} "
+                f"in the sources registry."
+            )
     url = src["url"]
     expected_hash = src.get("sha256")
     print(f"Fetching {url} ...", file=sys.stderr)
@@ -3207,7 +3258,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if isinstance(explicit, list) and explicit:
                 try:
                     f = resolve_version_file(t_dir, meta, None)
-                    text = f.read_text()
+                    text = _read_text_utf8(f)
                     for entry in explicit:
                         if entry.get("anchor") and entry["anchor"] not in text:
                             issues.append(
@@ -3221,7 +3272,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             if isinstance(aliases_map, dict) and aliases_map:
                 try:
                     f = resolve_version_file(t_dir, meta, None)
-                    text = f.read_text()
+                    text = _read_text_utf8(f)
                     cs = detect_clauses(
                         text,
                         explicit_map=explicit if isinstance(explicit, list) else None,
@@ -3248,7 +3299,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             try:
                 f = resolve_version_file(t_dir, meta, None)
                 cs = detect_clauses(
-                    f.read_text(),
+                    _read_text_utf8(f),
                     explicit_map=explicit if isinstance(explicit, list) else None,
                 )
                 if not cs and not (isinstance(explicit, list) and explicit):
@@ -3680,6 +3731,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         _eprint("interrupted")
         return 130
+    except Exception as e:  # noqa: BLE001 - backstop: never leak a raw traceback
+        _eprint(_red("error:") + f" unexpected {type(e).__name__}: {e}")
+        return 2
 
 
 if __name__ == "__main__":

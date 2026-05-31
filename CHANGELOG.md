@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.5.2 — 2026-05-31
+### Fixed — robustness (no more raw tracebacks to a calling agent)
+- **Non-UTF-8 version bodies (P1).** `get`/`diff`/`export`/`clauses`/`info`/
+  `swap`/`upgrade`/`compare-clauses`/`ask`/`doctor` now read template files
+  through a new `_read_text_utf8` helper that raises a clean `VaultError`
+  ("… is not valid UTF-8 text …") instead of a raw `UnicodeDecodeError`.
+  Reachable by `import`-ing a PDF/binary body and then e.g. `get`-ing it.
+- **`import` on a malformed custom registry (P1).** A `--sources` entry
+  missing `url`/`category`/`name` now raises a `VaultError` naming the
+  offending source id instead of a raw `KeyError`.
+- **`init` when `git` is absent (P2).** `cmd_init` now also catches
+  `FileNotFoundError` (mirroring `sync`/`publish`); init succeeds and warns
+  instead of crashing.
+- **Top-level catch-all in `main()` (P2).** Any unexpected exception is
+  converted to `error: unexpected <Type>: <msg>` with exit code 2, so the
+  CLI never leaks a raw stack trace to a calling agent.
+
+### Changed — durability
+- **Atomic writes (P2).** `_secure_write_text` / `_secure_write_bytes` (the
+  single choke point behind every persist — `.vault.json`, `meta.json`, and
+  uploaded/amended/composed/swapped/imported/upgraded template bodies) now
+  write a temp file in the same directory, fsync it, chmod 0600, and
+  `os.replace()` it into place, so a crash mid-write can no longer truncate
+  state files.
+
+### Hardened (P3)
+- `find --top-k` rejects negative values instead of returning a negative slice.
+
+(0.5.1 already shipped the path-containment and URL-scheme fixes from the
+same audit; this release closes the remaining robustness/durability items.)
+
 ## 0.5.1 — 2026-05-23
 ### Security
 - **Supply-chain hardening of CI/CD.** Every GitHub Action is pinned to a full
