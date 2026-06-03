@@ -574,13 +574,23 @@ def resolve_version_file(t_dir: Path, meta: Dict[str, Any], version: Optional[st
         vid = meta.get("latest_version")
     if not vid:
         raise NotFoundError(f"Template {t_dir} has no versions recorded")
-    if vid not in {v.get("id") for v in versions}:
+    if vid not in {v.get("id") for v in versions if isinstance(v, dict)}:
         raise NotFoundError(
             f"Version {vid!r} not found. Available: "
-            + ", ".join(v.get("id", "?") for v in versions)
+            + ", ".join(
+                str(v.get("id", "?")) for v in versions if isinstance(v, dict)
+            )
         )
-    candidates = sorted(t_dir.glob(f"{vid}.*"))
-    candidates = [c for c in candidates if c.name != META_FILENAME]
+    # `vid` comes from (attacker-controllable) meta.json; the membership check
+    # above only proves it matches some versions[].id, which is equally
+    # attacker-controlled. Validate it as a single path segment, then look the
+    # file up with iterdir()+stem matching so a crafted id can never glob (and
+    # `..` can never escape) outside t_dir.
+    _validate_path_component(str(vid), "version")
+    candidates = sorted(
+        c for c in t_dir.iterdir()
+        if c.is_file() and c.stem == vid and c.name != META_FILENAME
+    )
     if not candidates:
         raise NotFoundError(f"No file on disk for version {vid!r} in {t_dir}")
     if len(candidates) > 1:
@@ -727,6 +737,10 @@ def _detect_from_explicit(text: str, explicit_map: List[Dict[str, str]]
                           ) -> List[Dict[str, Any]]:
     located: List[Tuple[int, str, str]] = []
     for entry in explicit_map:
+        if not isinstance(entry, dict):
+            # Hand-edited meta.json can carry non-dict clause entries; skip them
+            # rather than crashing on .get() (doctor surfaces the malformed meta).
+            continue
         anchor = entry.get("anchor", "")
         title = entry.get("title", "").strip()
         if not anchor or not title:
@@ -1361,6 +1375,9 @@ def cmd_upload(args: argparse.Namespace) -> int:
     # version's changelog so the change is auditable in git.
     if getattr(args, "amend", None):
         amend_vid = args.amend
+        # --amend feeds t_dir.glob(f"{amend_vid}.*"); validate as a single path
+        # segment so it can't climb out of the vault root.
+        _validate_path_component(amend_vid, "version")
         target = next((v for v in meta["versions"] if v.get("id") == amend_vid), None)
         if target is None:
             raise VaultError(
@@ -1404,6 +1421,9 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
     # Determine version id
     vid = args.version or auto_increment_version(meta)
+    # `vid` becomes part of the on-disk filename (dest below); validate it as a
+    # single path segment so `--version ../../x` can't write outside the vault.
+    _validate_path_component(vid, "version")
     if vid in {v.get("id") for v in meta["versions"]}:
         raise VaultError(f"Version {vid!r} already exists for {category}/{name}")
 
@@ -1722,6 +1742,21 @@ def cmd_history(args: argparse.Namespace) -> int:
     meta = load_meta_resolved(t_dir)
     versions = list(meta.get("versions") or [])
     overrides = list(meta.get("clause_overrides") or [])
+    # meta.json is hand-editable: a non-dict element in versions[]/
+    # clause_overrides[] would later hit `.get()` / `**data` and blow up to the
+    # generic backstop (exit 2). Surface it as a clean VaultError instead.
+    bad = [
+        f"versions[{i}]" for i, v in enumerate(versions) if not isinstance(v, dict)
+    ] + [
+        f"clause_overrides[{i}]"
+        for i, o in enumerate(overrides)
+        if not isinstance(o, dict)
+    ]
+    if bad:
+        raise VaultError(
+            f"Malformed meta.json for {cat}/{name}: these entries are not JSON "
+            f"objects: {', '.join(bad)}"
+        )
     # Merge into an event list, sorted by (date, kind-priority).
     events: List[Tuple[str, str, Dict[str, Any]]] = []
     for v in versions:
@@ -2564,6 +2599,8 @@ def _ask_build_listing(root: Path, top_k: int, with_content: bool,
 
 def cmd_ask(args: argparse.Namespace) -> int:
     root = find_vault_root()
+    if args.top_k < 0:
+        raise VaultError(f"--top-k must be >= 0 (got {args.top_k})")
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     no_confirm = os.environ.get(NO_CONFIRM_ENV) == "1"
     if args.with_content:
