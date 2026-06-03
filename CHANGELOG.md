@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file. The
 format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and the project adheres to semantic versioning once it leaves 0.x.
 
+## 0.5.3 — 2026-06-03
+
+Security/robustness fixes from a follow-up source audit.
+
+### Fixed
+- **Path traversal via a hand-edited `meta.json` version id (P1).**
+  `resolve_version_file` now validates the meta-derived version id as a single path
+  segment and looks the file up via `iterdir()`+`stem` instead of `glob`, so a `../`
+  version id can no longer escape the vault root.
+- **Path traversal via `--version`/`--amend` on upload (P1 regression).** `cmd_upload`
+  validates both as path segments before they become on-disk filenames.
+- **Malformed `meta.json` no longer hits the generic backstop (P3).** `cmd_history`
+  and `_detect_from_explicit` guard non-dict elements in `versions[]`/
+  `clause_overrides[]`/`clauses[]`, yielding a clean `VaultError`.
+- **`ask --top-k` rejects negative values (P3)**, matching the `find` hardening.
+
 ## 0.5.2 — 2026-05-31
 ### Fixed — robustness (no more raw tracebacks to a calling agent)
 - **Non-UTF-8 version bodies (P1).** `get`/`diff`/`export`/`clauses`/`info`/

@@ -40,7 +40,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, cast
 # Constants
 # ---------------------------------------------------------------------------
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 VAULT_CONFIG_FILENAME = ".vault.json"
 META_FILENAME = "meta.json"
